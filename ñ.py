@@ -1,6 +1,14 @@
 #######################################
 # Constantes
 #######################################
+from ast import expr
+from cgitb import reset
+from math import factorial
+from select import select
+from turtle import ondrag
+from xml.dom import InvalidCharacterErr
+from strings_with_arrows import *
+
 
 Digitos = '0123456789'
 
@@ -36,7 +44,7 @@ class Position:
         self.fn = fn
         self.ftxt = ftxt
 
-    def avanzar(self, current_char):
+    def avanzar(self, current_char=None):
         self.idx += 1
         self.col += 1
 
@@ -77,12 +85,19 @@ COMA = 'COMA'
 FLECHA = 'FLECHA'
 NUEVALINEA = 'NUEVALINEA'
 FDC = 'FDC'
+FINALARCHIVO = 'EOF'
 
 
 class Token:
-    def __init__(self, type_, value=None):
+    def __init__(self, type_, value=None, pos_start=None, pos_end=None):
         self.type = type_
         self.value = value
+        if pos_start:
+            self.pos_start = pos_start.copiar()
+            self.pos_end = pos_start.copiar()
+            self.pos_end.avanzar()
+        if pos_end: 
+            self.pos_end = pos_end
     
     def __repr__(self):
         if self.value: return f'{self.type}:{self.value}'
@@ -113,22 +128,22 @@ class Lexer:
             elif self.current_char in Digitos:
                 tokens.append(self.crear_num())
             elif self.current_char == '+':
-                tokens.append(Token(MAS))
+                tokens.append(Token(MAS, pos_start=self.pos))
                 self.avanzar()
             elif self.current_char == '-':
-                tokens.append(Token(MENOS))
+                tokens.append(Token(MENOS, pos_start=self.pos))
                 self.avanzar()
             elif self.current_char == '*':
-                tokens.append(Token(MULT))
+                tokens.append(Token(MULT,pos_start=self.pos))
                 self.avanzar()
             elif self.current_char == '/':
-                tokens.append(Token(DIV))
+                tokens.append(Token(DIV,pos_start=self.pos))
                 self.avanzar()
             elif self.current_char == '(':
-                tokens.append(Token(PARENIZQ))
+                tokens.append(Token(PARENIZQ,pos_start=self.pos))
                 self.avanzar()
             elif self.current_char == ')':
-                tokens.append(Token(PARENDER))
+                tokens.append(Token(PARENDER,pos_start=self.pos))
                 self.avanzar()
             else:
                 pos_start = self.pos.copiar()
@@ -136,11 +151,13 @@ class Lexer:
                 self.avanzar()
                 return [], IllegalCharError(pos_start, self.pos, "'" + char + "'")
 
+        tokens.append(Token(FINALARCHIVO, pos_start= self.pos))
         return tokens, None
 
     def crear_num(self):
         num_str = ''
         dot_count = 0
+        pos_start = self.pos.copiar()
 
         while self.current_char != None and self.current_char in Digitos + '.':
             if self.current_char == '.':
@@ -152,9 +169,123 @@ class Lexer:
             self.avanzar()
 
         if dot_count == 0:
-            return Token(ENT, int(num_str))
+            return Token(ENT, int(num_str),pos_start, self.pos)
         else:
-            return Token(REAL, float(num_str))
+            return Token(REAL, float(num_str),pos_start,self.pos)
+
+
+
+#######################################
+# Nodos 
+#######################################
+class NumeroNodo:
+    def __init__(self,tok):
+        self.tok = tok
+    def __repr__(self):
+        return f'{self.tok}'
+class OperadorUnario:
+    def __init__(self,op_tok,node):
+        self.op_tok = op_tok
+        self.node = node
+    
+    def __repr__(self):
+        return f'({self.op_tok}, {self.node}'
+class OperadorBinario:
+    def __init__(self,left_node,op_tok,right_node):
+        self.left_node = left_node
+        self.op_tok = op_tok
+        self.right_node = right_node
+    def __repr__(self):
+        return f'({self.left_node}, {self.op_tok}, {self.right_node})'
+
+#######################################
+# Parse Result
+#######################################  
+
+class ParseResult:
+    def __init__(self):
+        self.error = None
+        self.node = None
+
+    def registrar(self,res):
+        if isinstance(res, ParseResult):
+            if res.error: self.error = res.error
+            return res.node
+        return res
+    
+    def correcto(self,node):
+        self.node = node
+        return self 
+    def fallo(self,error):
+        self.error = error
+        return self
+
+
+#######################################
+# Parser
+#######################################        
+class Parser:
+    def __init__(self,tokens):
+        self.tokens = tokens
+        self.tok_idx = -1
+        self.avanzar()
+    
+    def avanzar(self):
+        self.tok_idx += 1
+        if self.tok_idx < len(self.tokens):
+            self.current_tok = self.tokens[self.tok_idx]
+        return self.current_tok
+    
+    def parse(self):
+        res = self.expr()
+        if not res.error and self.current_tok.type != FINALARCHIVO:
+            return res.fallo(IllegalCharError(self.current_tok.pos_start, self.current_tok.pos_end, "Se esperaba '+', '-', '*' or '/'"))
+        return res
+#######################################  
+
+    def factor(self):
+        res = ParseResult()
+        tok = self.current_tok
+
+        if tok.type in (MAS,MENOS):
+            res.registrar(self.avanzar())
+            factor = res.registrar(self.factor())
+            if res.error: return res
+            return res.correcto(OperadorUnario(tok,factor))
+        elif tok.type in (ENT, REAL):
+            res.registrar(self.avanzar())
+            return res.correcto(NumeroNodo(tok))
+        elif tok.type == PARENIZQ:
+            res.registrar(self.avanzar())
+            expr = res.registrar(self.expr())
+            if res.error: return res
+            if self.current_tok.type   == PARENDER:
+                res.registrar(self.avanzar())
+                return res.correcto(expr)
+            else:
+                return res.fallo(InvalidCharacterErr(self.current_tok.pos_start, self.current_tok.pos_end,"Se esperaba ')'"))
+
+        return res.fallo(IllegalCharError(tok.pos_start, tok.pos_end, "Se esperaba un entero o un numero real"))
+    
+    def term(self):
+        return self.bin_op(self.factor, (MULT, DIV))
+
+    def expr(self):
+        return self.bin_op(self.term, (MAS, MENOS))
+
+#######################################
+    def bin_op(self, func, ops):
+        res = ParseResult()
+        left = res.registrar(func())
+        if res.error: return res
+        while self.current_tok.type in ops:
+            op_tok = self.current_tok
+            res.registrar(self.avanzar())
+            right = res.registrar(func())
+            if res.error: return res
+            left = OperadorBinario(left, op_tok, right)
+        
+        return res.correcto(left)
 
 #######################################
 # Correr
@@ -163,7 +294,12 @@ class Lexer:
 def exe(fn, text):
     lexer = Lexer(fn, text)
     tokens, error = lexer.crear_token()
+    if error: return None, error
+    #Generar AST
+    parser = Parser(tokens)
+    ast = parser.parse()
+    return ast.node, ast.error
 
-    return tokens, error
+  
 
 
