@@ -8,7 +8,7 @@ from math import factorial
 from multiprocessing import context
 from select import select
 #from time import clock_settime
-from turtle import ondrag
+from turtle import ondrag, pos
 from unittest import result
 from xml.dom import InvalidCharacterErr
 from strings_with_arrows import *
@@ -39,9 +39,13 @@ class IllegalCharError(Error):
     def __init__(self, pos_start, pos_end, details):
         super().__init__(pos_start, pos_end, 'Caracter incorrecto', details)
 
+class ExpectedCharError(Error):
+    def __init__(self, pos_start, pos_end, details):
+        super().__init__(pos_start, pos_end, 'Caracter esperado', details)
+
 class InvalidSyntaxError(Error):
 	def __init__(self, pos_start, pos_end, details=''):
-		super().__init__(pos_start, pos_end, 'Invalid Syntax', details)
+		super().__init__(pos_start, pos_end, 'Syntaxis Invalida', details)
 
 class RTError(Error):
     def __init__(self, pos_start, pos_end, details, contexto):
@@ -119,7 +123,10 @@ FDC = 'FDC'
 FINALARCHIVO = 'EOF'
 
 RESERVADAS = [
-    'VAR'
+    'VAR',
+    'Y',
+    'O',
+    'NO'
 ]
 class Token:
     def __init__(self, type_, value=None, pos_start=None, pos_end=None):
@@ -180,15 +187,22 @@ class Lexer:
             elif self.current_char == '^':
                 tokens.append(Token(POT,pos_start=self.pos))
                 self.avanzar()
-            elif self.current_char == '=':
-                tokens.append(Token(IG,pos_start=self.pos))
-                self.avanzar()
             elif self.current_char == '(':
                 tokens.append(Token(PARENIZQ,pos_start=self.pos))
                 self.avanzar()
             elif self.current_char == ')':
                 tokens.append(Token(PARENDER,pos_start=self.pos))
                 self.avanzar()
+            elif self.current_char == '!':
+                tok, error = self.crear_diferente()
+                if error: return [], error
+                tokens.append(tok)
+            elif self.current_char == '=':
+                tokens.append(self.crear_igual())
+            elif self.current_char == '<':
+                tokens.append(self.crear_menor())
+            elif self.current_char == '>':
+                tokens.append(self.crear_mayor())
             else:
                 pos_start = self.pos.copiar()
                 char = self.current_char
@@ -227,6 +241,43 @@ class Lexer:
         
         token_type = PALCL if id_str in RESERVADAS else ID
         return Token(token_type, id_str, pos_start, self.pos)
+    
+    def crear_diferente(self):
+        pos_ini = self.pos.copiar()
+        self.avanzar()
+        if self.current_char == '=':
+            self.avanzar()
+            return Token(NI, pos_start=pos_ini, pos_end=self.pos), None
+        self.avanzar()
+        return None, ExpectedCharError(pos_ini, self.pos, "'=' despues de '!'")
+    
+    def crear_igual(self):
+        tipo_tok = IG
+        pos_ini = self.pos.copiar()
+        self.avanzar()
+        if self.current_char == '=':
+            self.avanzar()
+            tipo_tok = II
+        return Token(tipo_tok, pos_start=pos_ini,pos_end=self.pos)
+    
+    def crear_menor(self):
+        tipo_tok = MEQ
+        pos_ini = self.pos.copiar()
+        self.avanzar()
+        if self.current_char == '=':
+            self.avanzar()
+            tipo_tok = MEI
+        return Token(tipo_tok, pos_start=pos_ini,pos_end=self.pos)
+
+    def crear_mayor(self):
+        tipo_tok = MAQ
+        pos_ini = self.pos.copiar()
+        self.avanzar()
+        if self.current_char == '=':
+            self.avanzar()
+            tipo_tok = MAI
+        return Token(tipo_tok, pos_start=pos_ini,pos_end=self.pos)
+
 
 
 #######################################
@@ -369,6 +420,30 @@ class Parser:
     def term(self):
         return self.bin_op(self.factor, (MULT, DIV))
 
+    def expr_arit(self):
+        return self.bin_op(self.term, (MAS, MENOS))
+
+    def expr_comp(self):
+        res = ParseResult()
+
+        if self.current_tok.iguala(PALCL, 'NO'):
+            tok_op = self.current_tok
+            res.registro_avance()
+            self.avanzar()
+            nodo = res.registrar(self.expr_comp())
+            if res.error: return res
+            return res.correcto(OperadorUnario(tok_op, nodo))
+        
+        nodo = res.registrar(self.bin_op(self.expr_arit, (II, NI, MEQ, MAQ, MEI, MAI)))
+
+        if res.error:
+            return res.fallo(InvalidSyntaxError(
+                self.current_tok.pos_start, self.current_tok.pos_end,
+                "Se esperaba ENT, REAL, ID, '+', '-', '(' o 'NO'"
+            ))
+
+        return res.correcto(nodo)
+
     def expr(self):
         res=ParseResult()
         if self.current_tok.iguala(PALCL,'VAR'):
@@ -392,7 +467,7 @@ class Parser:
             if res.error: return res
             return res.correcto(AsignamientoVarNodo(nombre_variable, expresion))
 
-        node =  res.registrar(self.bin_op(self.term, (MAS, MENOS)))
+        node =  res.registrar(self.bin_op(self.expr_comp, ((PALCL, "Y"), (PALCL, "O"))))
         if res.error: 
             return res.fallo(InvalidSyntaxError(self.current_tok.pos_start,self.current_tok.pos_end,
                 "Se esperaba 'VAR, 'ENT, REAL, ID, '+', '-' o '('"))
@@ -405,7 +480,7 @@ class Parser:
         res = ParseResult()
         left = res.registrar(func_a())
         if res.error: return res
-        while self.current_tok.type in ops:
+        while self.current_tok.type in ops or (self.current_tok.type, self.current_tok.value) in ops:
             op_tok = self.current_tok
             res.registro_avance()
             self.avanzar()
@@ -463,6 +538,41 @@ class Numero:
     def elevado_A(self, otro):
         if isinstance(otro, Numero):
             return Numero(self.value ** otro.value).set_contexto(self.contexto), None
+
+    def comparacion_ig(self, otro):
+        if isinstance(otro, Numero):
+            return Numero(int(self.value == otro.value)).set_contexto(self.contexto), None
+    
+    def comparacion_dif(self, otro):
+        if isinstance(otro, Numero):
+            return Numero(int(self.value != otro.value)).set_contexto(self.contexto), None
+    
+    def comparacion_meq(self, otro):
+        if isinstance(otro, Numero):
+            return Numero(int(self.value < otro.value)).set_contexto(self.contexto), None
+
+    def comparacion_maq(self, otro):
+        if isinstance(otro, Numero):
+            return Numero(int(self.value > otro.value)).set_contexto(self.contexto), None
+
+    def comparacion_mei(self, otro):
+        if isinstance(otro, Numero):
+            return Numero(int(self.value <= otro.value)).set_contexto(self.contexto), None
+
+    def comparacion_mai(self, otro):
+        if isinstance(otro, Numero):
+            return Numero(int(self.value >= otro.value)).set_contexto(self.contexto), None
+
+    def y_por(self, otro):
+        if isinstance(otro, Numero):
+            return Numero(int(self.value and otro.value)).set_contexto(self.contexto), None
+
+    def o_por(self, otro):
+        if isinstance(otro, Numero):
+            return Numero(int(self.value or otro.value)).set_contexto(self.contexto), None
+
+    def negado(self):
+        return Numero(1 if self.value == 0 else 0).set_contexto(self.contexto), None
 
     def copiar(self):
         copiar = Numero(self.value)
@@ -546,6 +656,9 @@ class Interpretador:
         
         if node.op_tok.type == MENOS:
             numero, error = numero.multiplicado_Por(Numero(-1))
+        elif node.op_tok.iguala(PALCL, 'NO'):
+            numero, error = numero.negado()
+        
         if error: return res.failure(error)
         else:
             return res.success(numero.set_posicion(node.pos_start, node.pos_end))
@@ -567,7 +680,23 @@ class Interpretador:
             result, error = left.dividido_Por(right)
         elif node.op_tok.type == POT:
             result, error = left.elevado_A(right)
-        
+        elif node.op_tok.type == II:
+            result, error = left.comparacion_ig(right)
+        elif node.op_tok.type == NI:
+            result, error = left.comparacion_dif(right)
+        elif node.op_tok.type == MEQ:
+            result, error = left.comparacion_meq(right)
+        elif node.op_tok.type == MAQ:
+            result, error = left.comparacion_maq(right)
+        elif node.op_tok.type == MEI:
+            result, error = left.comparacion_mei(right)
+        elif node.op_tok.type == MAI:
+            result, error = left.comparacion_mai(right)
+        elif node.op_tok.iguala(PALCL, 'Y'):
+            result, error = left.y_por(right)
+        elif node.op_tok.iguala(PALCL, 'O'):
+            result, error = left.o_por(right)
+
         if error:
             return res.failure(error)
         else:
@@ -578,7 +707,9 @@ class Interpretador:
 #######################################
 
 global_tabla_simbolos = tabladeSimbolos()
-global_tabla_simbolos.set("null", Numero(0))
+global_tabla_simbolos.set("NULO", Numero(0))
+global_tabla_simbolos.set("VERDADERO", Numero(1))
+global_tabla_simbolos.set("FALSO", Numero(0))
 
 def exe(fn, text):
     lexer = Lexer(fn, text)
