@@ -1,8 +1,9 @@
 #######################################
 # Constantes
 #######################################
-from ast import expr
+from ast import expr, keyword
 from cgitb import reset
+from lib2to3.pgen2 import token
 from math import factorial
 from multiprocessing import context
 from select import select
@@ -11,9 +12,11 @@ from turtle import ondrag
 from unittest import result
 from xml.dom import InvalidCharacterErr
 from strings_with_arrows import *
-
+import string
 
 Digitos = '0123456789'
+Letras = string.ascii_letters
+LetrasyDigitos = Letras + Digitos
 
 #######################################
 # Errores
@@ -91,13 +94,14 @@ class Position:
 ENT = 'ENT'
 REAL = 'REAL'
 CADENA = 'CADENA'
-ID = 'ID'
+PALCL='PALCL'           #Keyword
+ID = 'ID'               #Identificador
 MAS = 'MAS'
 MENOS = 'MENOS'
 MULT = 'MULT'
 DIV = 'DIV'
 POT = 'POT'
-IG = 'IG'
+IG = 'IG'               #Igual 
 PARENIZQ = 'PARENIZQ'
 PARENDER = 'PARENDER'
 CORCHIZQ = 'CORCHIZQ'
@@ -111,10 +115,12 @@ MAI = 'MAI'
 COMA = 'COMA'
 FLECHA = 'FLECHA'
 NUEVALINEA = 'NUEVALINEA'
-FDC = 'FDC'
+FDC = 'FDC'             
 FINALARCHIVO = 'EOF'
 
-
+RESERVADAS = [
+    'VAR'
+]
 class Token:
     def __init__(self, type_, value=None, pos_start=None, pos_end=None):
         self.type = type_
@@ -126,6 +132,9 @@ class Token:
         if pos_end: 
             self.pos_end = pos_end
     
+    def iguala(self, type_,value):
+        return self.type == type_ and self.value == value
+
     def __repr__(self):
         if self.value: return f'{self.type}:{self.value}'
         return f'{self.type}'
@@ -154,6 +163,8 @@ class Lexer:
                 self.avanzar()
             elif self.current_char in Digitos:
                 tokens.append(self.crear_num())
+            elif self.current_char in Letras:
+                tokens.append(self.crear_identificador())  
             elif self.current_char == '+':
                 tokens.append(Token(MAS, pos_start=self.pos))
                 self.avanzar()
@@ -168,6 +179,9 @@ class Lexer:
                 self.avanzar()
             elif self.current_char == '^':
                 tokens.append(Token(POT,pos_start=self.pos))
+                self.avanzar()
+            elif self.current_char == '=':
+                tokens.append(Token(IG,pos_start=self.pos))
                 self.avanzar()
             elif self.current_char == '(':
                 tokens.append(Token(PARENIZQ,pos_start=self.pos))
@@ -203,6 +217,16 @@ class Lexer:
         else:
             return Token(REAL, float(num_str),pos_start,self.pos)
 
+    def crear_identificador(self):
+        id_str = ''
+        pos_start = self.pos.copiar()
+
+        while self.current_char != None and self.current_char in LetrasyDigitos + '_':
+            id_str += self.current_char
+            self.avanzar()
+        
+        token_type = PALCL if id_str in RESERVADAS else ID
+        return Token(token_type, id_str, pos_start, self.pos)
 
 
 #######################################
@@ -216,6 +240,20 @@ class NumeroNodo:
         self.pos_end = self.tok.pos_end
     def __repr__(self):
         return f'{self.tok}'
+
+class AccesoVarNodo:
+    def __init__(self, nombre_var_tok):
+        self.nombre_var_tok = nombre_var_tok
+        self.pos_start = self.nombre_var_tok.pos_start 
+        self.pos_end = self.nombre_var_tok.pos_end
+
+class AsignamientoVarNodo:
+    def __init__(self, nombre_var_tok,val_nodo):
+        self.nombre_var_tok = nombre_var_tok
+        self.val_nodo = val_nodo
+        self.pos_start = self.nombre_var_tok.pos_start 
+        self.pos_end = self.nombre_var_tok.pos_end
+
 class OperadorUnario:
     def __init__(self,op_tok,node):
         self.op_tok = op_tok
@@ -226,6 +264,7 @@ class OperadorUnario:
     
     def __repr__(self):
         return f'({self.op_tok}, {self.node}'
+
 class OperadorBinario:
     def __init__(self,left_node,op_tok,right_node):
         self.left_node = left_node
@@ -245,18 +284,23 @@ class ParseResult:
     def __init__(self):
         self.error = None
         self.node = None
+        self.cuenta_avance = 0
+    
+    def registro_avance(self):
+        self.cuenta_avance += 1
 
     def registrar(self,res):
-        if isinstance(res, ParseResult):
-            if res.error: self.error = res.error
-            return res.node
-        return res
-    
+        self.cuenta_avance += res.cuenta_avance
+        if res.error: self.error = res.error
+        return res.node
+
     def correcto(self,node):
         self.node = node
         return self 
+
     def fallo(self,error):
-        self.error = error
+        if not self.error or self.cuenta_avance == 0: 
+            self.error = error
         return self
 
 
@@ -286,18 +330,25 @@ class Parser:
         tok = self.current_tok
 
         if tok.type in (ENT, REAL):
-            res.registrar(self.avanzar())
+            res.registro_avance()
+            self.avanzar()
             return res.correcto(NumeroNodo(tok))
+        elif tok.type == ID:
+            res.registro_avance()
+            self.avanzar()
+            return res.correcto(AccesoVarNodo(tok))
         elif tok.type == PARENIZQ:
-            res.registrar(self.avanzar())
+            res.registro_avance()
+            self.avanzar()
             expr = res.registrar(self.expr())
             if res.error: return res
             if self.current_tok.type   == PARENDER:
-                res.registrar(self.avanzar())
+                res.registro_avance()
+                self.avanzar()
                 return res.correcto(expr)
             else:
                 return res.fallo(InvalidCharacterErr(self.current_tok.pos_start, self.current_tok.pos_end,"Se esperaba ')'"))
-        return res.fallo(InvalidSyntaxError(tok.pos_start, tok.pos_end, "Se esperaba ENT, REAL, '+', '-' o '('"))    
+        return res.fallo(InvalidSyntaxError(tok.pos_start, tok.pos_end, "Se esperaba ENT, REAL, ID, '+', '-' o '('"))    
     
     def power(self):
         return self.bin_op(self.atom, (POT,), self.factor)
@@ -307,7 +358,8 @@ class Parser:
         tok = self.current_tok
 
         if tok.type in (MAS,MENOS):
-            res.registrar(self.avanzar())
+            res.registro_avance()
+            self.avanzar()
             factor = res.registrar(self.factor())
             if res.error: return res
             return res.correcto(OperadorUnario(tok,factor))
@@ -318,7 +370,33 @@ class Parser:
         return self.bin_op(self.factor, (MULT, DIV))
 
     def expr(self):
-        return self.bin_op(self.term, (MAS, MENOS))
+        res=ParseResult()
+        if self.current_tok.iguala(PALCL,'VAR'):
+            res.registro_avance()
+            self.avanzar()
+            if self.current_tok.type != ID:
+                return res.fallo(InvalidSyntaxError(
+                    self.current_tok.pos_start,self.current_tok.pos_end,"Se esperaba UN identificador"))
+
+            nombre_variable = self.current_tok
+            res.registro_avance()
+            self.avanzar()
+
+            if self.current_tok.type != IG:
+                return res.fallo(InvalidSyntaxError(
+                    self.current_tok.pos_start,self.current_tok.pos_end,"Se esperaba '='"))
+            
+            res.registro_avance()
+            self.avanzar()
+            expresion = res.registrar(self.expr())
+            if res.error: return res
+            return res.correcto(AsignamientoVarNodo(nombre_variable, expresion))
+
+        node =  res.registrar(self.bin_op(self.term, (MAS, MENOS)))
+        if res.error: 
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start,self.current_tok.pos_end,
+                "Se esperaba 'VAR, 'ENT, REAL, ID, '+', '-' o '('"))
+        return res.correcto(node)
 
 #######################################
     def bin_op(self, func_a, ops, func_b = None):
@@ -329,7 +407,8 @@ class Parser:
         if res.error: return res
         while self.current_tok.type in ops:
             op_tok = self.current_tok
-            res.registrar(self.avanzar())
+            res.registro_avance()
+            self.avanzar()
             right = res.registrar(func_b())
             if res.error: return res
             left = OperadorBinario(left, op_tok, right)
@@ -384,6 +463,13 @@ class Numero:
     def elevado_A(self, otro):
         if isinstance(otro, Numero):
             return Numero(self.value ** otro.value).set_contexto(self.contexto), None
+
+    def copiar(self):
+        copiar = Numero(self.value)
+        copiar.set_posicion(self.pos_start, self.pos_end)
+        copiar.set_contexto(self.contexto)
+        return copiar
+
     def __repr__(self):
         return str(self.value)
 #######################################
@@ -394,6 +480,29 @@ class Contexto:
         self.display_name = display_name
         self.parent = parent
         self.parent_entry_pos = parent_entry_pos
+        self.tabla_simbolos = None
+
+#######################################
+# Tabla de simbolos
+#######################################
+
+class tabladeSimbolos:
+    def __init__(self):
+        self.simbolos = {}
+        self.padre = None
+
+    def get(self, nombre):
+        valor = self.simbolos.get(nombre,None)
+        if valor == None and self.padre:
+            return self.padre.get(nombre)
+        return valor
+
+    def set(self, nombre, valor):
+        self.simbolos[nombre] = valor
+
+    def remove(self, nombre):
+        del self.simbolos[nombre]
+
 #######################################
 # Interpretador
 #######################################
@@ -407,7 +516,26 @@ class Interpretador:
     #######################################
     def visit_NumeroNodo(self, node, contexto):
         return RuntimeResult().success(Numero(node.tok.value).set_contexto(contexto).set_posicion(node.pos_start, node.pos_end)) 
-            
+
+    def visit_AccesoVarNodo(self, node, contexto):
+        res = RuntimeResult()
+        nombre_var = node.nombre_var_tok.value
+        value = contexto.tabla_simbolos.get(nombre_var)
+
+        if not value:
+            return res.failure(RTError(node.pos_start, node.pos_end,f"'{nombre_var}' no esta definido", contexto))
+
+        value = value.copiar().set_posicion(node.pos_start, node.pos_end)
+        return res.success(value)
+
+    def visit_AsignamientoVarNodo(self, node, contexto):
+        res = RuntimeResult()
+        nombre_var = node.nombre_var_tok.value
+        value = res.register(self.visit(node.val_nodo,contexto))
+
+        if res.error: return res
+        contexto.tabla_simbolos.set(nombre_var, value)
+        return res.success(value)
 
     def visit_OperadorUnario(self, node, contexto):
         res = RuntimeResult()
@@ -449,6 +577,9 @@ class Interpretador:
 # Correr
 #######################################
 
+global_tabla_simbolos = tabladeSimbolos()
+global_tabla_simbolos.set("null", Numero(0))
+
 def exe(fn, text):
     lexer = Lexer(fn, text)
     tokens, error = lexer.crear_token()
@@ -461,6 +592,7 @@ def exe(fn, text):
     #Correr programa
     interpreter = Interpretador()
     contexto = Contexto('<programa>')
+    contexto.tabla_simbolos = global_tabla_simbolos
     result = interpreter.visit(ast.node, contexto)
 
     return result.value, result.error
