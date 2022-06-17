@@ -181,3 +181,7 @@ opcid -> ID | λ
 params -> ID nparam | λ
 nparam -> COMA ID nparam | λ
 finfun -> FLECHA expresion | NUEVALINEA declaraciones RESERVADA:FIN
+
+si-expr: RESERVADA: SI expresion RESERVADA:ENTONCES expresion
+		(RESERVADA:SINOESTO expresion RESERVADA:ENTONCES expresion)*
+		(RESERVADA:SINO expresion)?

@@ -1,3 +1,4 @@
+from unittest import result
 import ñ
 
 while True:
@@ -5,4 +6,4 @@ while True:
     res, error = ñ.exe("<input>",text)
 
     if error: print(error.como_str())
-    else: print(res)
+    elif res: print(res)

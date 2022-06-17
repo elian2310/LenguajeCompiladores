@@ -2,10 +2,12 @@
 # Constantes
 #######################################
 from ast import expr, keyword
+from asyncio import selector_events
 from cgitb import reset
 from lib2to3.pgen2 import token
 from math import factorial
 from multiprocessing import context
+import re
 from select import select
 #from time import clock_settime
 from turtle import ondrag, pos
@@ -126,7 +128,13 @@ RESERVADAS = [
     'VAR',
     'Y',
     'O',
-    'NO'
+    'NO',
+    'SI',
+    'ENTONCES',
+    'SINOESTO',
+    'SINO'
+
+
 ]
 class Token:
     def __init__(self, type_, value=None, pos_start=None, pos_end=None):
@@ -327,6 +335,14 @@ class OperadorBinario:
     def __repr__(self):
         return f'({self.left_node}, {self.op_tok}, {self.right_node})'
 
+class SiNodo:
+    def __init__(self, cases, else_case):
+        self.cases = cases
+        self.else_case =  else_case
+
+        self.pos_start = self.cases[0][0].pos_start
+        self.pos_end = (self.else_case or self.cases[len(self.cases) - 1][0]).pos_end
+
 #######################################
 # Parse Result
 #######################################  
@@ -375,7 +391,48 @@ class Parser:
         if not res.error and self.current_tok.type != FINALARCHIVO:
             return res.fallo(IllegalCharError(self.current_tok.pos_start, self.current_tok.pos_end, "Se esperaba '+', '-', '*' or '/'"))
         return res
-#######################################  
+####################################### 
+    def if_expr(self):
+        res = ParseResult()
+        cases = []
+        else_case = None
+        if not self.current_tok.iguala(PALCL, 'SI'):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Se esperaba 'SI'"))
+        res.registro_avance()
+        self.avanzar()
+        condicion= res.registrar(self.expr())
+        if res.error: return res
+
+        if not self.current_tok.iguala(PALCL, 'ENTONCES'):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Se esperaba 'ENTONCES'"))
+        res.registro_avance()
+        self.avanzar()
+        expr= res.registrar(self.expr())
+        if res.error: return res
+        cases.append((condicion,expr))
+
+        while self.current_tok.iguala(PALCL, 'SINOESTO'):
+            res.registro_avance()
+            self.avanzar()
+
+            condicion= res.registrar(self.expr())
+            if res.error: return res
+            if not self.current_tok.iguala(PALCL, 'ENTONCES'):
+                return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Se esperaba 'ENTONCES'"))
+
+            res.registro_avance()
+            self.avanzar()
+
+            expr= res.registrar(self.expr())
+            if res.error: return res
+            cases.append((condicion, expr))
+        if self.current_tok.iguala(PALCL, 'SINO'):
+            res.registro_avance()
+            self.avanzar()
+
+            else_case=res.registrar(self.expr())
+            if res.error: return res
+        return res.correcto(SiNodo(cases, else_case))
     def atom(self):
         res = ParseResult()
         tok = self.current_tok
@@ -399,6 +456,12 @@ class Parser:
                 return res.correcto(expr)
             else:
                 return res.fallo(InvalidCharacterErr(self.current_tok.pos_start, self.current_tok.pos_end,"Se esperaba ')'"))
+        
+        elif tok.iguala(PALCL, 'SI'):
+            if_expr = res.registrar(self.if_expr())
+            if res.error: return res
+            return res.correcto(if_expr)
+
         return res.fallo(InvalidSyntaxError(tok.pos_start, tok.pos_end, "Se esperaba ENT, REAL, ID, '+', '-' o '('"))    
     
     def power(self):
@@ -579,6 +642,9 @@ class Numero:
         copiar.set_posicion(self.pos_start, self.pos_end)
         copiar.set_contexto(self.contexto)
         return copiar
+    
+    def es_verdad(self):
+        return self.value !=0
 
     def __repr__(self):
         return str(self.value)
@@ -701,7 +767,21 @@ class Interpretador:
             return res.failure(error)
         else:
             return res.success(result.set_posicion(node.pos_start, node.pos_end))
+    def visit_SiNodo(self, node, contexto):
+        res = RuntimeResult()
+        for condition, expr in node.cases:
+            condition_value = res.register(self.visit(condition,contexto))
+            if res.error: return res
 
+            if condition_value.es_verdad():
+                expr_value= res.register(self.visit(expr,contexto))
+                if res.error: return res
+                return res.success(expr_value)
+        if node.else_case:
+            else_value= res.register(self.visit(node.else_case, contexto))
+            if res.error: return res
+            return res.success(else_value)   
+        return res.success(None)     
 #######################################
 # Correr
 #######################################
