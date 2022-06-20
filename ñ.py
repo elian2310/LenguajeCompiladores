@@ -1,7 +1,7 @@
 #######################################
 # Constantes
 #######################################
-from ast import expr, keyword
+from ast import Num, expr, keyword
 from asyncio import selector_events
 from cgitb import reset
 from lib2to3.pgen2 import token
@@ -132,7 +132,11 @@ RESERVADAS = [
     'SI',
     'ENTONCES',
     'SINOESTO',
-    'SINO'
+    'SINO',
+    'POR',
+    'A',
+    'PASO',
+    'MIENTRAS'
 
 
 ]
@@ -318,7 +322,7 @@ class OperadorUnario:
         self.op_tok = op_tok
         self.node = node
 
-        self. pos_start = self.left_node.pos_start
+        self. pos_start = self.op_tok.pos_start
         self.pos_end = node.pos_end
     
     def __repr__(self):
@@ -342,6 +346,27 @@ class SiNodo:
 
         self.pos_start = self.cases[0][0].pos_start
         self.pos_end = (self.else_case or self.cases[len(self.cases) - 1][0]).pos_end
+
+class PorNodo:
+    def __init__(self, nom_var_tok, val_ini_nodo, val_fin_nodo, paso_nodo, cuerpo_nodo):
+        self.nom_var_tok = nom_var_tok
+        self.val_ini_nodo = val_ini_nodo
+        self.val_fin_nodo = val_fin_nodo
+        self.paso_nodo = paso_nodo
+        self.cuerpo_nodo = cuerpo_nodo
+
+        self.pos_ini = self.nom_var_tok.pos_start
+        self.pos_fin = self.cuerpo_nodo.pos_end
+
+class MientrasNodo:
+    def __init__(self, condicion_nodo, cuerpo_nodo):
+        self.condicion_nodo = condicion_nodo
+        self.cuerpo_nodo = cuerpo_nodo
+
+        self.pos_ini = condicion_nodo.pos_start
+        self.pos_fin = cuerpo_nodo.pos_end
+
+
 
 #######################################
 # Parse Result
@@ -433,6 +458,86 @@ class Parser:
             else_case=res.registrar(self.expr())
             if res.error: return res
         return res.correcto(SiNodo(cases, else_case))
+
+    def por_expr(self):
+        res = ParseResult()
+
+        if not self.current_tok.iguala(PALCL, 'POR'):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba 'POR'"))
+
+        res.registro_avance()
+        self.avanzar()
+
+        if self.current_tok.type != ID:
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba Identificador"))
+
+        nom_var = self.current_tok
+        res.registro_avance()
+        self.avanzar()
+
+        if self.current_tok.type != IG:
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba '='"))
+
+        res.registro_avance()
+        self.avanzar()
+
+        val_ini = res.registrar(self.expr())
+        if res.error: return res
+
+        if not self.current_tok.iguala(PALCL, 'A'):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba 'A'"))
+
+        res.registro_avance()
+        self.avanzar()
+
+        val_fin = res.registrar(self.expr())
+        if res.error : return res
+
+        if self.current_tok.iguala(PALCL, 'PASO'):
+            res.registro_avance()
+            self.avanzar()
+
+            val_paso = res.registrar(self.expr())
+            if res.error: return res
+
+        else:
+            val_paso = None
+
+        if not self.current_tok.iguala(PALCL, 'ENTONCES'):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba 'ENTONCES'"))
+
+        res.registro_avance()
+        self.avanzar()
+
+        cuerpo = res.registrar(self.expr())
+        if res.error: return res
+
+        return res.correcto(PorNodo(nom_var, val_ini, val_fin, val_paso, cuerpo))
+
+    def mientras_expr(self):
+        res = ParseResult()
+
+        if not self.current_tok.iguala(PALCL, 'MIENTRAS'):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba 'MIENTRAS'"))
+
+        res.registro_avance()
+        self.avanzar()
+
+        condicion = res.registrar(self.expr())
+        if res.error: return res
+
+        if not self.current_tok.iguala(PALCL, 'ENTONCES'):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba 'ENTONCES'"))
+
+        res.registro_avance()
+        self.avanzar()
+
+        cuerpo = res.registrar(self.expr())
+        if res.error: return res
+
+        return res.correcto(MientrasNodo(condicion, cuerpo))
+
+
     def atom(self):
         res = ParseResult()
         tok = self.current_tok
@@ -461,6 +566,17 @@ class Parser:
             if_expr = res.registrar(self.if_expr())
             if res.error: return res
             return res.correcto(if_expr)
+
+        elif tok.iguala(PALCL, 'POR'):
+            por_expr = res.registrar(self.por_expr())
+            if res.error: return res
+            return res.correcto(por_expr)
+        
+        elif tok.iguala(PALCL, 'MIENTRAS'):
+            mientras_expr = res.registrar(self.mientras_expr())
+            if res.error: return res
+            return res.correcto(mientras_expr)
+
 
         return res.fallo(InvalidSyntaxError(tok.pos_start, tok.pos_end, "Se esperaba ENT, REAL, ID, '+', '-' o '('"))    
     
@@ -782,6 +898,51 @@ class Interpretador:
             if res.error: return res
             return res.success(else_value)   
         return res.success(None)     
+
+    def visit_PorNodo(self, nodo, contexto):
+        res = RuntimeResult()
+
+        val_ini = res.register(self.visit(nodo.val_ini_nodo, contexto))
+        if res.error: return res
+
+        val_fin = res.register(self.visit(nodo.val_fin_nodo, contexto))
+        if res.error: return res
+
+        if nodo.paso_nodo:
+            paso = res.register(self.visit(nodo.paso_nodo, contexto))
+            if res.error: return res
+        else:
+            paso = Numero(1)
+
+        i = val_ini.value
+
+        if paso.value >= 0:
+            condicion = lambda: i < val_fin.value
+        else:
+            condicion = lambda: i > val_fin.value
+
+        while condicion():
+            contexto.tabla_simbolos.set(nodo.nom_var_tok.value, Numero(i))
+            i += paso.value
+
+            res.register(self.visit(nodo.cuerpo_nodo, contexto))
+            if res.error: return res
+
+        return res.success(None)
+
+    def visit_MientrasNodo(self, nodo, contexto):
+        res = RuntimeResult()
+
+        while True:
+            condicion = res.register(self.visit(nodo.condicion_nodo, contexto))
+            if res.error: return res
+
+            if not condicion.es_verdad(): break
+
+            res.register(self.visit(nodo.cuerpo_nodo, contexto))
+            if res.error: return res
+
+        return res.success(None)
 #######################################
 # Correr
 #######################################
