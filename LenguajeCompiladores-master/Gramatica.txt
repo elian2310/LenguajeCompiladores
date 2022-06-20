@@ -1,0 +1,192 @@
+TIPO---VALOR
+INT = 'ENT'
+FLOAT = 'REAL'
+STRING = 'CADENA'
+IDENTIFIER = 'ID'
+PLUS = 'MAS'
+MINUS = 'MENOS'
+MULT = 'MULT'
+DIV = 'DIV'
+POW = 'POT'
+EQ = 'IG'
+LPAREN = 'PARENIZQ'
+RPAREN = 'PARENDER'
+LSQUARE = 'CORCHIZQ'
+RSQUARE = 'CORCHDER'
+EE = 'II'
+NE = 'NI'
+LT = 'MEQ'
+GT = 'MAQ'
+LTE = 'MEI'
+GTE = 'MAI'
+COMMA = 'COMA'
+ARROW = 'FLECHA'
+NEWLINE = 'NUEVALINEA'
+EOF = 'FDC'
+
+RESERVADAS = [
+'VAR'
+'Y'
+'O'
+'NO'
+'SI'
+'SINOESTO'
+'SINO'
+'POR'
+'A'
+'PASO'
+'MIENTRAS'
+'FUNC'
+'ENTONCES'
+'FIN'
+'DEVOLVER'
+'CONTINUAR'
+'ROMPER'
+]
+
+ER
+declaraciones : NUEVALINEA* declaracion (NUEVALINEA+ declaracion)* NUEVALINEA*
+GLC
+declaraciones -> nl declaracion declaraciones' nl
+declaraciones' -> nl' declaracion declaraciones' | λ
+nl -> NUEVALINEA nl | λ
+nl' -> NUEVALINEA nl | NUEVALINEA
+
+
+ER
+declaracion: RESERVADA:DEVOLVER expresion?
+	   : RESERVADA:CONTINUAR
+	   : RESERVADA:ROMPER
+	   : expresion
+GLC
+declaracion -> RESERVADA:DEVOLVER exp | RESERVADA: CONTINUAR | RESERVADA:ROMPER | expresion
+exp -> expresion | λ
+
+ER
+expresion: RESERVADA:VAR ID IG expresion
+	 : expresion-comp ((RESERVADA:Y|RESERVADA:O) expresion-comp)*
+GLC
+expresion -> RESERVADA:VAR ID IG expresion
+expresion -> expresion-comp cmp
+cmp -> ao expresion-comp cmp | λ
+ao -> RESERVADA:Y | RESERVADA:O
+
+ER
+expresion-comp : NO expresion-comp
+	       : expresion-arit ((II|MEQ|MAQ|MEI|MAI) expresion-arit)*
+GLC
+expresion-comp -> NO expresion-comp | expresion-arit arit-comp
+arit-comp -> ncmp expresion-arit arit-comp | λ
+ncmp -> II|MEQ|MAQ|MEI|MAI
+
+ER
+expresion-arit : termino ((MAS|MENOS) termino)*
+
+GLC
+expresion-arit -> termino nterm
+nterm -> mm termino nterm | λ
+mm -> MAS | MENOS
+
+ER
+termino : factor ((MULT|DIV) factor)*
+GLC
+termino -> factor nfac
+nfac -> md factor nfac | λ
+md -> MULT | DIV
+
+ER
+factor : (MAS|MENOS) factor
+       : potencia
+GLC
+factor -> mm factor | potencia
+
+ER
+potencia : invocar (POT factor)*
+
+GLC
+potencia -> invocar npot
+npot -> POT factor npot | λ
+
+ER
+invocar : atomico (PARENIZQ (expresion (COMA expresion)*)? PARENDER)?
+
+GLC
+invocar -> atomico ninv
+ninv -> PARENIZQ invexp PARENDER | λ
+invexp -> expresion extraexp | λ
+extraexp -> COMA expresion extraexp | λ
+
+ER
+atomico : ENT|REAL|CADENA|ID
+	: PARENIZQ expresion PARENDER
+	: lista-expr
+	: si-expr
+	: por-expr
+	: mientras-expr
+	: def-funcion
+
+GLC
+atomico -> ENT | REAL | CADENA | ID | PARENIZQ expresion PARENDER | lista-expr | si-expr | por-expr | mientras-expr | def-funcion
+
+ER
+lista-expr: CORCHIZQ (expresion (COMA expresion)*)? CORCHDER
+
+GLC
+lista-expr -> CORCHIZQ invexp CORCHDER
+
+ER
+si-expr : RESERVADA:SI expresion RESERVADA:ENTONCES ((declaracion si-expr-b|si-expr-c?)
+	  |(NUEVALINEA declaraciones RESERVADA:FIN|si-expr-b|si-expr-c))
+
+GLC
+si-expr -> RESERVADA:SI expresion RESERVADA:ENTONCES casos
+casos -> declaracion casos' | NUEVALINEA declaraciones fincasos
+casos' -> si-expr-b | si-expr-c | λ
+fincasos -> RESERVADA:FIN | si-expr-b | si-expr-c
+
+ER
+si-expr-b : RESERVADA:SINOESTO expresion RESERVADA:ENTONCES ((declaracion si-expr-b|si-expr-c?)
+	    | (NUEVALINEA declaraciones RESERVADA:FIN | si-expr-b | si-expr-c))
+
+GLC
+si-expr-b -> RESERVADA:SINOESTO expresion RESERVADA:ENTONCES casos
+
+ER
+si-expr-c : RESERVADA:SINO (declaracion|(NUEVALINEA declaraciones RESERVADA:FIN))
+
+GLC
+si-expr-c -> RESERVADA:SINO finexp
+finexp -> declaracion | NUEVALINEA declaraciones RESERVADA:FIN
+
+ER
+por-expr : RESERVADA:POR ID IG expresion RESERVADA:A expresion (RESERVADA:PASO expresion)? RESERVADA:ENTONCES (declaracion
+	   | (NUEVALINEA declaraciones RESERVADA:FIN))
+GLC
+por-expr -> RESERVADA:POR ID IG expresion RESERVADA:A expresion paso' RESERVADA:ENTONCES finexp
+paso' -> RESERVADA:PASO expresion | λ
+
+ER
+mientras-expr: RESERVADA:MIENTRAS expresion RESERVADA:ENTONCES (declaracion
+	       | (NUEVALINEA declaraciones RESERVADA:FIN))
+GLC
+mientras-expr -> RESERVADA:MIENTRAS expresion RESERVADA:ENTONCES finexp
+
+ER
+def-funcion: RESERVADA:FUNC ID? PARENIZQ (ID (COMA ID)*)? PARENDER ((FLECHA expresion)
+	     | (NUEVALINEA declaraciones RESERVADA:FIN))
+
+GLC
+def-funcion -> RESERVADA:FUNC opcid PARENIZQ params PARENDER finfun
+opcid -> ID | λ
+params -> ID nparam | λ
+nparam -> COMA ID nparam | λ
+finfun -> FLECHA expresion | NUEVALINEA declaraciones RESERVADA:FIN
+
+si-expr: RESERVADA: SI expresion RESERVADA:ENTONCES expresion
+		(RESERVADA:SINOESTO expresion RESERVADA:ENTONCES expresion)*
+		(RESERVADA:SINO expresion)?
+
+por-expr: RESERVADA: POR IDENTIFIER EQ expresion RESERVADA: A expresion
+		(RESERVADA: PASO expresion)? RESERVADA: LUEGO expresion
+
+mientras-expr : RESERVADA: MIENTRAS expresion RESERVADA: LUEGO expresion
