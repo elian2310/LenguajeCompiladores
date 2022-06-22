@@ -219,6 +219,7 @@ class Lexer:
                 tokens.append(self.crear_mayor())
             elif self.current_char == ',':
                 tokens.append(Token(COMA,pos_start=self.pos))
+                self.avanzar()
             else:
                 pos_start = self.pos.copiar()
                 char = self.current_char
@@ -368,25 +369,24 @@ class PorNodo:
         self.paso_nodo = paso_nodo
         self.cuerpo_nodo = cuerpo_nodo
 
-        self.pos_ini = self.nom_var_tok.pos_start
-        self.pos_fin = self.cuerpo_nodo.pos_end
+        self.pos_start = self.nom_var_tok.pos_start
+        self.pos_end = self.cuerpo_nodo.pos_end
 
 class MientrasNodo:
     def __init__(self, condicion_nodo, cuerpo_nodo):
         self.condicion_nodo = condicion_nodo
         self.cuerpo_nodo = cuerpo_nodo
 
-        self.pos_ini = condicion_nodo.pos_start
-        self.pos_fin = cuerpo_nodo.pos_end
-
+        self.pos_start = condicion_nodo.pos_start
+        self.pos_end = cuerpo_nodo.pos_end 
 class FuncDefNodo: 
     def __init__(self,var_nombre_tok, arg_nombre_toks, cuerpo_nodo):
-        self.var_nombre_tok = var_nombre_tok
+        self.nombre_var_tok = var_nombre_tok
         self.arg_nombre_toks = arg_nombre_toks
         self.cuerpo_nodo = cuerpo_nodo
 
-        if self.var_nombre_tok:
-            self.pos_start = self.var_nombre_tok.pos_start
+        if self.nombre_var_tok:
+            self.pos_start = self.nombre_var_tok.pos_start
         elif len(self.arg_nombre_toks) > 0:
             self.pos_start = self.arg_nombre_toks[0].pos_start
         else:
@@ -576,6 +576,7 @@ class Parser:
         return res.correcto(MientrasNodo(condicion, cuerpo))
  
     def func_def(self):
+        #print("definiendo funcion")
         res = ParseResult()
 
         if not self.current_tok.iguala(PALCL, 'FUN'):
@@ -586,7 +587,7 @@ class Parser:
 
         if self.current_tok.type == ID: 
             var_nombre_tok = self.current_tok
-            res.registro_avance()
+            res.registro_avance() 
             self.avanzar()
             if self.current_tok.type != PARENIZQ:
                 return res.fallo(InvalidSyntaxError(
@@ -609,7 +610,7 @@ class Parser:
             arg_nombre_toks.append(self.current_tok)
             res.registro_avance()
             self.avanzar()
-
+            #print("viendo argumentos en funcdef")
             while self.current_tok.type == COMA:
                 res.registro_avance()
                 self.avanzar()
@@ -644,6 +645,7 @@ class Parser:
         res.registro_avance()
         self.avanzar()
         nodo_a_devolver = res.registrar(self.expr())
+        #print("funcion definida")
         if res.error : return res
         return res.correcto(FuncDefNodo(var_nombre_tok,arg_nombre_toks,nodo_a_devolver))
 
@@ -696,6 +698,7 @@ class Parser:
     def power(self):
         return self.bin_op(self.call, (POT,), self.factor)
     def call(self):
+        #print("llamando funcion")
         res = ParseResult()
         atom = res.registrar(self.atom())
         if res.error: return res
@@ -713,7 +716,7 @@ class Parser:
 						self.current_tok.pos_start, self.current_tok.pos_end,
 						"Esperaba ')', 'VAR', 'SI', 'PARA', 'MIENTRAS', 'FUN', entero, flotante, identificador, '+', '-', '(' o 'NO'"
 					))
-
+                #print("viendo argumentos en call")
                 while self.current_tok.type == COMA:
                     res.registro_avance()
                     self.avanzar()
@@ -728,7 +731,9 @@ class Parser:
 					))
                 res.registro_avance()
                 self.avanzar()
+            #print("funcion llamada")
             return res.correcto(LlamarNodo(atom, arg_nodos))
+        #print("funcion llamada")
         return res.correcto(atom)
         
 
@@ -850,7 +855,7 @@ class Valor:
     def set_contexto(self, contexto=None):
         self.contexto = contexto
         return self
-    def Sumado_A(self, otro):
+    def sumado_A(self, otro):
         return None, self.operacion_ilegal(otro)
 
     def restado_Por(self, otro):
@@ -893,7 +898,7 @@ class Valor:
         return None, self.operacion_ilegal(otro)
 
     def ejecutar(self, args):
-        return None, self.operacion_ilegal()
+        return RuntimeResult().failure(self.operacion_ilegal())
 
     def copiar(self):
         raise Exception('No copy method defined')
@@ -906,7 +911,7 @@ class Valor:
         return RTError(
             self.pos_start, otro.pos_end,
             'Operacion ilegal',
-            self.context
+            self.contexto
         )
 
 class Numero(Valor):
@@ -918,87 +923,87 @@ class Numero(Valor):
         if isinstance(otro, Numero):
             return Numero(self.value + otro.value).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
     def restado_Por(self, otro):
         if isinstance(otro, Numero):
             return Numero(self.value - otro.value).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
     def multiplicado_Por(self, otro):
         if isinstance(otro, Numero):
             return Numero(self.value * otro.value).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
     def dividido_Por(self, otro):
         if isinstance(otro, Numero):
             if otro.value == 0:
                 return None, RTError(otro.pos_start, otro.pos_end, 'Division entre 0', self.contexto)
             return Numero(self.value / otro.value).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
     def elevado_A(self, otro):
         if isinstance(otro, Numero):
             return Numero(self.value ** otro.value).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
 
     def comparacion_ig(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value == otro.value)).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
     
     def comparacion_dif(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value != otro.value)).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
     
     def comparacion_meq(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value < otro.value)).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
 
     def comparacion_maq(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value > otro.value)).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
 
     def comparacion_mei(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value <= otro.value)).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
 
     def comparacion_mai(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value >= otro.value)).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
 
     def y_por(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value and otro.value)).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
 
     def o_por(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value or otro.value)).set_contexto(self.contexto), None
         else: 
-            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
+            return None, Valor.operacion_ilegal(self,otro)
 
     def negado(self):
         return Numero(1 if self.value == 0 else 0).set_contexto(self.contexto), None
     
 
     def copiar(self):
-        copiar = Numero(self.value)
-        copiar.set_posicion(self.pos_start, self.pos_end)
-        copiar.set_contexto(self.contexto)
-        return copiar
+        copia = Numero(self.value)
+        copia.set_posicion(self.pos_start, self.pos_end)
+        copia.set_contexto(self.contexto)
+        return copia
     
     def es_verdad(self):
         return self.value !=0
@@ -1014,20 +1019,21 @@ class Funcion(Valor):
         self.arg_nombres = arg_nombres
 
     def ejecutar(self,args):
+        #print("ejecutando funcion")
         res = RuntimeResult()
         interpreter = Interpretador()
         nuevo_contexto = Contexto(self.nombre, self.contexto, self.pos_start)
         nuevo_contexto.tabla_simbolos = tabladeSimbolos(nuevo_contexto.parent.tabla_simbolos)
         
         if len(args) > len(self.arg_nombres):
-            return res.fallo(RTError(
+            return res.failure(RTError(
                 self.pos_start, self.pos_end,
                 f"{len(args) - len(self.arg_nombres)} demasiados argumentos '{self.nombre}'",
                 self.contexto
             ))
         
         if len(args) < len(self.arg_nombres):
-            return res.fallo(RTError(
+            return res.failure(RTError(
                 self.pos_start, self.pos_end,
                 f"{len(self.arg_nombres) - len(args)} Muy pocos argumentos '{self.nombre}'",
                 self.contexto
@@ -1039,18 +1045,19 @@ class Funcion(Valor):
             arg_valor.set_contexto(nuevo_contexto)
             nuevo_contexto.tabla_simbolos.set(arg_nombre, arg_valor)
         
-        valor = res.registrar(interpreter.visit(self.cuerpo_nodo, nuevo_contexto))
+        valor = res.register(interpreter.visit(self.cuerpo_nodo, nuevo_contexto))
+        #print("funcion ejecutada")
         if res.error: return res
-        return res.correcto(valor)
+        return res.success(valor)
 
     def copiar(self):
-        copiar = Funcion(self.nombre, self.cuerpo_nodo, self.arg_nombres)
-        copiar.set_contexto(self.contexto)
-        copiar.set_posicion(self.pos_start, self.pos_end)
-        return copiar   
+        copia = Funcion(self.nombre, self.cuerpo_nodo, self.arg_nombres)
+        copia.set_contexto(self.contexto)
+        copia.set_posicion(self.pos_start, self.pos_end)
+        return copia   
 
     def __repr__(self):
-        return f"<function {self.nombre}>"
+        return f"<funcion {self.nombre}>"
 
 #######################################
 # Contexto
@@ -1210,7 +1217,7 @@ class Interpretador:
             condicion = lambda: i > val_fin.value
 
         while condicion():
-            contexto.tabla_simbolos.set(nodo.nombre_var_tok.value, Numero(i))
+            contexto.tabla_simbolos.set(nodo.nom_var_tok.value, Numero(i))
             i += paso.value
 
             res.register(self.visit(nodo.cuerpo_nodo, contexto))
@@ -1233,31 +1240,35 @@ class Interpretador:
         return res.success(None)
 
     def visit_FuncDefNodo(self, nodo, contexto):
+        #print("nodo def a visitar")
         res = RuntimeResult()
 
-        func_nombre = nodo.var_nombre_tok.valor if nodo else None
+        func_nombre = nodo.nombre_var_tok.value if nodo.nombre_var_tok else None
         cuerpo_nodo = nodo.cuerpo_nodo
         arg_nombres = [arg_name.value for arg_name in nodo.arg_nombre_toks]
         func_valor = Funcion(func_nombre, cuerpo_nodo, arg_nombres).set_contexto(contexto).set_posicion(nodo.pos_start, nodo.pos_end)
         
-        if nodo.var_nombre_tok:
+        if nodo.nombre_var_tok:
             contexto.tabla_simbolos.set(func_nombre, func_valor)
 
+        #print("nodo def visitado")
         return res.success(func_valor)
     
-    def visit_CallNode(self, node, context):
+    def visit_LlamarNodo(self, node, context):
+        #print("nodo llamar a visitar")
         res = RuntimeResult()
         args = []
 
-        valor_a_llamar = res.registrar(self.visit(node.nodo_a_llamar, context))
+        valor_a_llamar = res.register(self.visit(node.nodo_a_llamar, context))
         if res.error: return res
         valor_a_llamar = valor_a_llamar.copiar().set_posicion(node.pos_start, node.pos_end)
 
         for arg_node in node.arg_nodos:
-            args.append(res.registrar(self.visit(arg_node, context)))
+            args.append(res.register(self.visit(arg_node, context)))
             if res.error: return res
 
-        return_value = res.registrar(valor_a_llamar.ejecutar(args))
+        return_value = res.register(valor_a_llamar.ejecutar(args))
+        #print("nodo llamar visitado")
         if res.error: return res
         return res.success(return_value)
     
