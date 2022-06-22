@@ -1,12 +1,14 @@
 #######################################
 # Constantes
 #######################################
-from ast import Num, expr, keyword
+from ast import Num, Return, expr, keyword
 from asyncio import selector_events
 from cgitb import reset
 from lib2to3.pgen2 import token
+from lib2to3.pgen2.parse import ParseError
 from math import factorial
 from multiprocessing import context
+from pickletools import read_uint1
 import re
 from select import select
 #from time import clock_settime
@@ -136,7 +138,8 @@ RESERVADAS = [
     'POR',
     'A',
     'PASO',
-    'MIENTRAS'
+    'MIENTRAS',
+    'FUN'
 
 
 ]
@@ -188,8 +191,7 @@ class Lexer:
                 tokens.append(Token(MAS, pos_start=self.pos))
                 self.avanzar()
             elif self.current_char == '-':
-                tokens.append(Token(MENOS, pos_start=self.pos))
-                self.avanzar()
+                tokens.append(self.crear_menos_o_flecha())
             elif self.current_char == '*':
                 tokens.append(Token(MULT,pos_start=self.pos))
                 self.avanzar()
@@ -215,6 +217,8 @@ class Lexer:
                 tokens.append(self.crear_menor())
             elif self.current_char == '>':
                 tokens.append(self.crear_mayor())
+            elif self.current_char == ',':
+                tokens.append(Token(COMA,pos_start=self.pos))
             else:
                 pos_start = self.pos.copiar()
                 char = self.current_char
@@ -253,7 +257,16 @@ class Lexer:
         
         token_type = PALCL if id_str in RESERVADAS else ID
         return Token(token_type, id_str, pos_start, self.pos)
-    
+
+    def crear_menos_o_flecha(self):
+        tipo_tok = MENOS
+        pos_start = self.pos.copiar()
+        self.avanzar()
+        
+        if self.current_char == '>':
+            self.avanzar()
+            tipo_tok = FLECHA
+        return Token(tipo_tok,pos_start=pos_start,pos_end=self.pos)
     def crear_diferente(self):
         pos_ini = self.pos.copiar()
         self.avanzar()
@@ -366,7 +379,32 @@ class MientrasNodo:
         self.pos_ini = condicion_nodo.pos_start
         self.pos_fin = cuerpo_nodo.pos_end
 
+class FuncDefNodo: 
+    def __init__(self,var_nombre_tok, arg_nombre_toks, cuerpo_nodo):
+        self.var_nombre_tok = var_nombre_tok
+        self.arg_nombre_toks = arg_nombre_toks
+        self.cuerpo_nodo = cuerpo_nodo
 
+        if self.var_nombre_tok:
+            self.pos_start = self.var_nombre_tok.pos_start
+        elif len(self.arg_nombre_toks) > 0:
+            self.pos_start = self.arg_nombre_toks[0].pos_start
+        else:
+            self.pos_start = self.cuerpo_nodo.pos_start
+
+        self.pos_end = self.cuerpo_nodo.pos_end
+
+class LlamarNodo: 
+    def __init__(self, nodo_a_llamar, arg_nodos):
+        self.nodo_a_llamar = nodo_a_llamar
+        self.arg_nodos = arg_nodos
+
+        self.pos_start = self.nodo_a_llamar.pos_start
+
+        if len(self.arg_nodos) > 0:
+            self.pos_end = self.arg_nodos[len(self.arg_nodos) - 1].pos_end
+        else:
+            self.pos_end = self.nodo_a_llamar.pos_end
 
 #######################################
 # Parse Result
@@ -536,7 +574,78 @@ class Parser:
         if res.error: return res
 
         return res.correcto(MientrasNodo(condicion, cuerpo))
+ 
+    def func_def(self):
+        res = ParseResult()
 
+        if not self.current_tok.iguala(PALCL, 'FUN'):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba 'FUN'"))
+
+        res.registro_avance()
+        self.avanzar()
+
+        if self.current_tok.type == ID: 
+            var_nombre_tok = self.current_tok
+            res.registro_avance()
+            self.avanzar()
+            if self.current_tok.type != PARENIZQ:
+                return res.fallo(InvalidSyntaxError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					f"Esperaba '('"
+				))
+        else:
+            var_nombre_tok = None
+            if self.current_tok.type != PARENIZQ:
+                return res.fallo(InvalidSyntaxError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					f"Esperaba identificador o '('"
+				))
+
+        res.registro_avance()
+        self.avanzar()
+        arg_nombre_toks = []
+
+        if self.current_tok.type == ID:
+            arg_nombre_toks.append(self.current_tok)
+            res.registro_avance()
+            self.avanzar()
+
+            while self.current_tok.type == COMA:
+                res.registro_avance()
+                self.avanzar()
+                if self.current_tok.type != ID:
+                    return res.fallo(InvalidSyntaxError(
+						self.current_tok.pos_start, self.current_tok.pos_end,
+						f"Esperaba identificador"
+					))
+
+                arg_nombre_toks.append(self.current_tok)
+                res.registro_avance()
+                self.avanzar()
+
+            if self.current_tok.type != PARENDER:
+                return res.fallo(InvalidSyntaxError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					f"Esperaba ',' o ')'"
+				))
+        else:
+            if self.current_tok.type != PARENDER:
+                return res.fallo(InvalidSyntaxError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					f"Esperaba identificador o ')'"
+				))
+        res.registro_avance()
+        self.avanzar()
+        if self.current_tok.type != FLECHA:
+            return res.fallo(InvalidSyntaxError(
+				self.current_tok.pos_start, self.current_tok.pos_end,
+				f"Esperaba '->'"
+			))
+        res.registro_avance()
+        self.avanzar()
+        nodo_a_devolver = res.registrar(self.expr())
+        if res.error : return res
+        return res.correcto(FuncDefNodo(var_nombre_tok,arg_nombre_toks,nodo_a_devolver))
 
     def atom(self):
         res = ParseResult()
@@ -576,13 +685,54 @@ class Parser:
             mientras_expr = res.registrar(self.mientras_expr())
             if res.error: return res
             return res.correcto(mientras_expr)
-
+        
+        elif tok.iguala(PALCL, 'FUN'):
+            func_def = res.registrar(self.func_def())
+            if res.error: return res
+            return res.correcto(func_def)
 
         return res.fallo(InvalidSyntaxError(tok.pos_start, tok.pos_end, "Se esperaba ENT, REAL, ID, '+', '-' o '('"))    
     
     def power(self):
-        return self.bin_op(self.atom, (POT,), self.factor)
-    
+        return self.bin_op(self.call, (POT,), self.factor)
+    def call(self):
+        res = ParseResult()
+        atom = res.registrar(self.atom())
+        if res.error: return res
+        if self.current_tok.type == PARENIZQ:
+            res.registro_avance()
+            self.avanzar()
+            arg_nodos = []
+            if self.current_tok.type == PARENDER:
+                res.registro_avance()
+                self.avanzar()
+            else: 
+                arg_nodos.append(res.registrar(self.expr()))
+                if res.error:
+                    return res.fallo(InvalidSyntaxError(
+						self.current_tok.pos_start, self.current_tok.pos_end,
+						"Esperaba ')', 'VAR', 'SI', 'PARA', 'MIENTRAS', 'FUN', entero, flotante, identificador, '+', '-', '(' o 'NO'"
+					))
+
+                while self.current_tok.type == COMA:
+                    res.registro_avance()
+                    self.avanzar()
+
+                    arg_nodos.append(res.registrar(self.expr()))
+                    if res.error: return res
+                
+                if self.current_tok.type != PARENDER:
+                    return res.fallo(InvalidSyntaxError(
+                        self.current_tok.pos_start, self.current_tok.pos_end,
+                        f"Esperaba ',' o ')'"
+					))
+                res.registro_avance()
+                self.avanzar()
+            return res.correcto(LlamarNodo(atom, arg_nodos))
+        return res.correcto(atom)
+        
+
+
     def factor(self):
         res = ParseResult()
         tok = self.current_tok
@@ -688,70 +838,161 @@ class RuntimeResult:
 #######################################
 # Valores
 #######################################
-class Numero:
-    def __init__(self,value):
-        self.value = value
+class Valor:
+    def __init__(self):
         self.set_posicion()
         self.set_contexto()
-    def set_posicion(self,pos_start = None,pos_end = None):
+    
+    def set_posicion(self,pos_start=None,pos_end=None):
         self.pos_start = pos_start
         self.pos_end = pos_end
         return self
-    def set_contexto(self,contexto = None):
+    def set_contexto(self, contexto=None):
         self.contexto = contexto
         return self
+    def Sumado_A(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def restado_Por(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def multiplicado_Por(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def dividido_Por(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def elevado_A(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def comparacion_ig(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def comparacion_dif(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def comparacion_meq(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def comparacion_maq(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def comparacion_mei(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def comparacion_mai(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def y_por(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def o_por(self, otro):
+        return None, self.operacion_ilegal(otro)
+
+    def negado(self,otro):
+        return None, self.operacion_ilegal(otro)
+
+    def ejecutar(self, args):
+        return None, self.operacion_ilegal()
+
+    def copiar(self):
+        raise Exception('No copy method defined')
+
+    def es_verdad(self):
+        return False
+
+    def operacion_ilegal(self, otro=None):
+        if not otro: otro = self
+        return RTError(
+            self.pos_start, otro.pos_end,
+            'Operacion ilegal',
+            self.context
+        )
+
+class Numero(Valor):
+    def __init__(self,value):
+        super().__init__()
+        self.value = value
+   
     def sumado_A(self, otro):
         if isinstance(otro, Numero):
             return Numero(self.value + otro.value).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
     def restado_Por(self, otro):
         if isinstance(otro, Numero):
             return Numero(self.value - otro.value).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
     def multiplicado_Por(self, otro):
         if isinstance(otro, Numero):
             return Numero(self.value * otro.value).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
     def dividido_Por(self, otro):
         if isinstance(otro, Numero):
             if otro.value == 0:
                 return None, RTError(otro.pos_start, otro.pos_end, 'Division entre 0', self.contexto)
             return Numero(self.value / otro.value).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
     def elevado_A(self, otro):
         if isinstance(otro, Numero):
             return Numero(self.value ** otro.value).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
 
     def comparacion_ig(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value == otro.value)).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
     
     def comparacion_dif(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value != otro.value)).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
     
     def comparacion_meq(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value < otro.value)).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
 
     def comparacion_maq(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value > otro.value)).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
 
     def comparacion_mei(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value <= otro.value)).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
 
     def comparacion_mai(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value >= otro.value)).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
 
     def y_por(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value and otro.value)).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
 
     def o_por(self, otro):
         if isinstance(otro, Numero):
             return Numero(int(self.value or otro.value)).set_contexto(self.contexto), None
+        else: 
+            return None, Valor.operacion_ilegal(self.pos_start,otro.pos_end)
 
     def negado(self):
         return Numero(1 if self.value == 0 else 0).set_contexto(self.contexto), None
+    
 
     def copiar(self):
         copiar = Numero(self.value)
@@ -764,6 +1005,53 @@ class Numero:
 
     def __repr__(self):
         return str(self.value)
+
+class Funcion(Valor):
+    def __init__(self, nombre, cuerpo_nodo, arg_nombres):
+        super().__init__()
+        self.nombre = nombre or "<anonimo>"
+        self.cuerpo_nodo = cuerpo_nodo
+        self.arg_nombres = arg_nombres
+
+    def ejecutar(self,args):
+        res = RuntimeResult()
+        interpreter = Interpretador()
+        nuevo_contexto = Contexto(self.nombre, self.contexto, self.pos_start)
+        nuevo_contexto.tabla_simbolos = tabladeSimbolos(nuevo_contexto.parent.tabla_simbolos)
+        
+        if len(args) > len(self.arg_nombres):
+            return res.fallo(RTError(
+                self.pos_start, self.pos_end,
+                f"{len(args) - len(self.arg_nombres)} demasiados argumentos '{self.nombre}'",
+                self.contexto
+            ))
+        
+        if len(args) < len(self.arg_nombres):
+            return res.fallo(RTError(
+                self.pos_start, self.pos_end,
+                f"{len(self.arg_nombres) - len(args)} Muy pocos argumentos '{self.nombre}'",
+                self.contexto
+            ))
+
+        for i in range(len(args)):
+            arg_nombre = self.arg_nombres[i]
+            arg_valor = args[i]
+            arg_valor.set_contexto(nuevo_contexto)
+            nuevo_contexto.tabla_simbolos.set(arg_nombre, arg_valor)
+        
+        valor = res.registrar(interpreter.visit(self.cuerpo_nodo, nuevo_contexto))
+        if res.error: return res
+        return res.correcto(valor)
+
+    def copiar(self):
+        copiar = Funcion(self.nombre, self.cuerpo_nodo, self.arg_nombres)
+        copiar.set_contexto(self.contexto)
+        copiar.set_posicion(self.pos_start, self.pos_end)
+        return copiar   
+
+    def __repr__(self):
+        return f"<function {self.nombre}>"
+
 #######################################
 # Contexto
 #######################################
@@ -779,9 +1067,9 @@ class Contexto:
 #######################################
 
 class tabladeSimbolos:
-    def __init__(self):
+    def __init__(self,parent=None):
         self.simbolos = {}
-        self.padre = None
+        self.padre = parent
 
     def get(self, nombre):
         valor = self.simbolos.get(nombre,None)
@@ -922,7 +1210,7 @@ class Interpretador:
             condicion = lambda: i > val_fin.value
 
         while condicion():
-            contexto.tabla_simbolos.set(nodo.nom_var_tok.value, Numero(i))
+            contexto.tabla_simbolos.set(nodo.nombre_var_tok.value, Numero(i))
             i += paso.value
 
             res.register(self.visit(nodo.cuerpo_nodo, contexto))
@@ -943,6 +1231,36 @@ class Interpretador:
             if res.error: return res
 
         return res.success(None)
+
+    def visit_FuncDefNodo(self, nodo, contexto):
+        res = RuntimeResult()
+
+        func_nombre = nodo.var_nombre_tok.valor if nodo else None
+        cuerpo_nodo = nodo.cuerpo_nodo
+        arg_nombres = [arg_name.value for arg_name in nodo.arg_nombre_toks]
+        func_valor = Funcion(func_nombre, cuerpo_nodo, arg_nombres).set_contexto(contexto).set_posicion(nodo.pos_start, nodo.pos_end)
+        
+        if nodo.var_nombre_tok:
+            contexto.tabla_simbolos.set(func_nombre, func_valor)
+
+        return res.success(func_valor)
+    
+    def visit_CallNode(self, node, context):
+        res = RuntimeResult()
+        args = []
+
+        valor_a_llamar = res.registrar(self.visit(node.nodo_a_llamar, context))
+        if res.error: return res
+        valor_a_llamar = valor_a_llamar.copiar().set_posicion(node.pos_start, node.pos_end)
+
+        for arg_node in node.arg_nodos:
+            args.append(res.registrar(self.visit(arg_node, context)))
+            if res.error: return res
+
+        return_value = res.registrar(valor_a_llamar.ejecutar(args))
+        if res.error: return res
+        return res.success(return_value)
+    
 #######################################
 # Correr
 #######################################
@@ -952,7 +1270,7 @@ global_tabla_simbolos.set("NULO", Numero(0))
 global_tabla_simbolos.set("VERDADERO", Numero(1))
 global_tabla_simbolos.set("FALSO", Numero(0))
 
-def exe(fn, text):
+def exe(fn, text): 
     lexer = Lexer(fn, text)
     tokens, error = lexer.crear_token()
     if error: return None, error

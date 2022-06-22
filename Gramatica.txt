@@ -185,3 +185,9 @@ finfun -> FLECHA expresion | NUEVALINEA declaraciones RESERVADA:FIN
 si-expr: RESERVADA: SI expresion RESERVADA:ENTONCES expresion
 		(RESERVADA:SINOESTO expresion RESERVADA:ENTONCES expresion)*
 		(RESERVADA:SINO expresion)?
+def-fun	:	RESERVADA: FUN IDENTIFICADOR?
+			PARENIZQ (IDENTIFICADOR (COMA IDENTIFICADOR)*)? PARENDER
+			FLECHA expr 
+
+call : atomico (PARENIZQ expr (COMA expr)*)? PARENDER)?
+	   
