@@ -8,11 +8,13 @@ from lib2to3.pgen2 import token
 from lib2to3.pgen2.parse import ParseError
 from math import factorial
 from multiprocessing import context
+from multiprocessing.sharedctypes import Value
+from pickle import TRUE
 from pickletools import read_uint1
 import re
 from select import select
 #from time import clock_settime
-from turtle import ondrag, pos
+#from turtle import ondrag, pos
 from unittest import result
 from xml.dom import InvalidCharacterErr
 from strings_with_arrows import *
@@ -187,6 +189,8 @@ class Lexer:
                 tokens.append(self.crear_num())
             elif self.current_char in Letras:
                 tokens.append(self.crear_identificador())  
+            elif self.current_char == '"':
+                tokens.append(self.crear_cadena())
             elif self.current_char == '+':
                 tokens.append(Token(MAS, pos_start=self.pos))
                 self.avanzar()
@@ -247,6 +251,32 @@ class Lexer:
             return Token(ENT, int(num_str),pos_start, self.pos)
         else:
             return Token(REAL, float(num_str),pos_start,self.pos)
+    
+    def crear_cadena(self):
+        string = ''
+        pos_start = self.pos.copiar()
+        caracter_escape = False
+        self.avanzar()
+
+        caracteres_escape = {
+            'n' : '\n',
+            't' : '\t'
+        }
+
+        while self.current_char != None and self.current_char != '"' or caracter_escape :
+            if caracter_escape:
+                string += caracter_escape.get(self.current_char, self.current_char)
+            else:
+                if self.current_char == '\\':
+                    caracter_escape = True
+                else:
+                    string += self.current_char
+            self.avanzar()
+            caracter_escape = False
+        
+        self.avanzar()
+        return Token(CADENA, string, pos_start, self.pos)
+
 
     def crear_identificador(self):
         id_str = ''
@@ -310,6 +340,15 @@ class Lexer:
 # Nodos 
 #######################################
 class NumeroNodo:
+    def __init__(self,tok):
+        self.tok = tok
+
+        self.pos_start = self.tok.pos_start
+        self.pos_end = self.tok.pos_end
+    def __repr__(self):
+        return f'{self.tok}'
+
+class CadenaNodo:
     def __init__(self,tok):
         self.tok = tok
 
@@ -657,6 +696,10 @@ class Parser:
             res.registro_avance()
             self.avanzar()
             return res.correcto(NumeroNodo(tok))
+        elif tok.type == CADENA:
+            res.registro_avance()
+            self.avanzar()
+            return res.correcto(CadenaNodo(tok))
         elif tok.type == ID:
             res.registro_avance()
             self.avanzar()
@@ -1011,6 +1054,41 @@ class Numero(Valor):
     def __repr__(self):
         return str(self.value)
 
+class Cadena(Valor):
+    def __init__(self, valor):
+        super().__init__()
+        self.value = valor
+
+    def sumado_A(self, otro):
+        if isinstance(otro, Cadena):
+            return Cadena(self.value + otro.value).set_contexto(self.contexto), None
+        else:
+            return None, Valor.operacion_ilegal(self, otro)
+    
+    def multiplicado_Por(self, otro):
+        if isinstance(otro, Cadena):
+            return Cadena(self.value * otro.value).set_contexto(self.contexto), None
+        else:
+            return None, Valor.operacion_ilegal(self, otro)
+    
+    def multiplicado_Por(self, otro):
+        if isinstance(otro, Numero):
+            return Cadena(self.value * otro.value).set_contexto(self.contexto), None
+        else:
+            return None, Valor.operacion_ilegal(self, otro)
+            
+    def es_verdad(self):
+        return len(self.value) > 0
+
+    def copiar(self):
+        copy = Cadena(self.value)
+        copy.set_posicion(self.pos_start, self.pos_end)
+        copy.set_contexto(self.contexto)
+        return copy
+    
+    def __repr__(self):
+        return f'"{self.value}"'
+    
 class Funcion(Valor):
     def __init__(self, nombre, cuerpo_nodo, arg_nombres):
         super().__init__()
@@ -1103,6 +1181,11 @@ class Interpretador:
     #######################################
     def visit_NumeroNodo(self, node, contexto):
         return RuntimeResult().success(Numero(node.tok.value).set_contexto(contexto).set_posicion(node.pos_start, node.pos_end)) 
+
+    def visit_CadenaNodo(self,node,context):
+        return RuntimeResult().success(
+        Cadena(node.tok.value).set_contexto(context).set_posicion(node.pos_start, node.pos_end)
+        )
 
     def visit_AccesoVarNodo(self, node, contexto):
         res = RuntimeResult()
