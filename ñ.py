@@ -17,6 +17,7 @@ from select import select
 #from turtle import ondrag, pos
 from unittest import result
 from xml.dom import InvalidCharacterErr
+from xml.dom.minidom import Element
 from strings_with_arrows import *
 import string
 
@@ -115,7 +116,7 @@ IG = 'IG'               #Igual
 PARENIZQ = 'PARENIZQ'
 PARENDER = 'PARENDER'
 CORCHIZQ = 'CORCHIZQ'
-CORCHIZQ = 'CORCHDER'
+CORCHDER = 'CORCHDER'
 II = 'II'
 NI = 'NI'
 MEQ = 'MEQ'
@@ -210,6 +211,12 @@ class Lexer:
                 self.avanzar()
             elif self.current_char == ')':
                 tokens.append(Token(PARENDER,pos_start=self.pos))
+                self.avanzar()
+            elif self.current_char == '[':
+                tokens.append(Token(CORCHIZQ,pos_start=self.pos))
+                self.avanzar()
+            elif self.current_char == ']':
+                tokens.append(Token(CORCHDER,pos_start=self.pos))
                 self.avanzar()
             elif self.current_char == '!':
                 tok, error = self.crear_diferente()
@@ -356,6 +363,12 @@ class CadenaNodo:
         self.pos_end = self.tok.pos_end
     def __repr__(self):
         return f'{self.tok}'
+
+class ListaNodo:
+    def __init__(self,elementos_nodo,pos_start,pos_end):
+        self.elementos_nodo = elementos_nodo
+        self.pos_start = pos_start
+        self.pos_end = pos_end
 
 class AccesoVarNodo:
     def __init__(self, nombre_var_tok):
@@ -715,7 +728,11 @@ class Parser:
                 return res.correcto(expr)
             else:
                 return res.fallo(InvalidCharacterErr(self.current_tok.pos_start, self.current_tok.pos_end,"Se esperaba ')'"))
-        
+        elif tok.type == CORCHIZQ:
+            expr_lista = res.registrar(self.expr_lista())
+            if res.error: return res
+            return res.correcto(expr_lista)
+
         elif tok.iguala(PALCL, 'SI'):
             if_expr = res.registrar(self.if_expr())
             if res.error: return res
@@ -736,7 +753,7 @@ class Parser:
             if res.error: return res
             return res.correcto(func_def)
 
-        return res.fallo(InvalidSyntaxError(tok.pos_start, tok.pos_end, "Se esperaba ENT, REAL, ID, '+', '-' o '('"))    
+        return res.fallo(InvalidSyntaxError(tok.pos_start, tok.pos_end, "Se esperaba ENT, REAL, ID, '+', '-', '(' o '['"))    
     
     def power(self):
         return self.bin_op(self.call, (POT,), self.factor)
@@ -757,7 +774,7 @@ class Parser:
                 if res.error:
                     return res.fallo(InvalidSyntaxError(
 						self.current_tok.pos_start, self.current_tok.pos_end,
-						"Esperaba ')', 'VAR', 'SI', 'PARA', 'MIENTRAS', 'FUN', entero, flotante, identificador, '+', '-', '(' o 'NO'"
+						"Esperaba ')', 'VAR', 'SI', 'PARA', 'MIENTRAS', 'FUN', entero, flotante, identificador, '+', '-', '(', '[' o 'NO'"
 					))
                 #print("viendo argumentos en call")
                 while self.current_tok.type == COMA:
@@ -799,6 +816,45 @@ class Parser:
 
     def expr_arit(self):
         return self.bin_op(self.term, (MAS, MENOS))
+
+    def expr_lista(self):
+        res = ParseResult()
+        elementos_nodo = []
+        pos_start = self.current_tok.pos_start.copiar()
+
+        if self.current_tok.type != CORCHIZQ:
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Se esperaba '[' "))
+
+        res.registro_avance()
+        self.avanzar()
+
+        if self.current_tok.type == CORCHDER:
+            res.registro_avance()
+            self.avanzar()
+        else:
+            elementos_nodo.append(res.registrar(self.expr()))
+            if res.error:
+                return res.fallo(InvalidSyntaxError(
+					self.current_tok.pos_start, self.current_tok.pos_end,
+					"Esperaba ']', 'VAR', 'SI', 'PARA', 'MIENTRAS', 'FUN', entero, flotante, identificador, '+', '-', '(', '[' o 'NO'"
+				))
+
+            while self.current_tok.type == COMA:
+                res.registro_avance()
+                self.avanzar()
+
+                elementos_nodo.append(res.registrar(self.expr()))
+                if res.error: return res
+                
+            if self.current_tok.type != CORCHDER:
+                return res.fallo(InvalidSyntaxError(
+                    self.current_tok.pos_start, self.current_tok.pos_end,
+                    f"Esperaba ',' o ']'"
+				))
+            res.registro_avance()
+            self.avanzar()
+        return res.correcto(ListaNodo(elementos_nodo, pos_start, self.current_tok.pos_end.copiar()))
+        
 
     def expr_comp(self):
         res = ParseResult()
@@ -847,7 +903,7 @@ class Parser:
         node =  res.registrar(self.bin_op(self.expr_comp, ((PALCL, "Y"), (PALCL, "O"))))
         if res.error: 
             return res.fallo(InvalidSyntaxError(self.current_tok.pos_start,self.current_tok.pos_end,
-                "Se esperaba 'VAR, 'ENT, REAL, ID, '+', '-' o '('"))
+                "Se esperaba 'VAR, 'ENT, REAL, ID, '+', '-', '(', '['"))
         return res.correcto(node)
 
 #######################################
@@ -1088,7 +1144,56 @@ class Cadena(Valor):
     
     def __repr__(self):
         return f'"{self.value}"'
+
+class Lista(Valor):
+    def __init__(self,elementos):
+        super().__init__()
+        self.elementos = elementos
+        
+    def sumado_A(self, otro):
+        nueva_lista = self.copiar()
+        nueva_lista.elementos.append(otro)
+        return nueva_lista, None
     
+    def restado_Por(self,otro):
+        if isinstance(otro,Numero):
+            nueva_lista = self.copiar()
+            try:
+                nueva_lista.elementos.pop(otro.value)     #######
+                return nueva_lista, None
+            except:
+                return None, RTError(otro.pos_start, otro.pos_end, 
+                'El elemento en este índice no se pudo eliminar de la lista porque el índice está fuera de los límites', self.contexto)
+        else:
+            return None, Valor.operacion_ilegal(self, otro)
+
+    def multiplicado_Por(self, otro):
+        if isinstance(otro,Lista):
+            nueva_lista = self.copiar()
+            nueva_lista.elementos.extend(otro.elementos)
+            return nueva_lista, None
+        else:
+            return None, Valor.operacion_ilegal(self, otro)
+
+    def dividido_Por(self,otro):
+        if isinstance(otro,Numero):
+            try:
+                return self.elementos[otro.value], None
+            except:
+                return None, RTError(otro.pos_start, otro.pos_end, 
+                'El elemento en este índice no se pudo recuperar de la lista porque el índice está fuera de los límites', self.contexto)
+        else:
+            return None, Valor.operacion_ilegal(self, otro)
+
+    def copiar(self):
+        copia = Lista(self.elementos[:])
+        copia.set_posicion(self.pos_start, self.pos_end)
+        copia.set_contexto(self.contexto)
+        return copia
+
+    def __repr__(self):
+        return f'[{",".join([str(x) for x in self.elementos])}]'
+
 class Funcion(Valor):
     def __init__(self, nombre, cuerpo_nodo, arg_nombres):
         super().__init__()
@@ -1182,9 +1287,19 @@ class Interpretador:
     def visit_NumeroNodo(self, node, contexto):
         return RuntimeResult().success(Numero(node.tok.value).set_contexto(contexto).set_posicion(node.pos_start, node.pos_end)) 
 
-    def visit_CadenaNodo(self,node,context):
+    def visit_CadenaNodo(self, node, context):
         return RuntimeResult().success(
         Cadena(node.tok.value).set_contexto(context).set_posicion(node.pos_start, node.pos_end)
+        )
+
+    def visit_ListaNodo(self, node, contexto):
+        res = RuntimeResult()
+        elementos = []
+        for nodo_elemento in node.elementos_nodo:
+            elementos.append(res.register(self.visit(nodo_elemento, contexto)))
+            if res.error: return res
+        return res.success(
+            Lista(elementos).set_contexto(contexto).set_posicion(node.pos_start,node.pos_end)
         )
 
     def visit_AccesoVarNodo(self, node, contexto):
@@ -1279,6 +1394,7 @@ class Interpretador:
 
     def visit_PorNodo(self, nodo, contexto):
         res = RuntimeResult()
+        elementos = []
 
         val_ini = res.register(self.visit(nodo.val_ini_nodo, contexto))
         if res.error: return res
@@ -1303,13 +1419,14 @@ class Interpretador:
             contexto.tabla_simbolos.set(nodo.nom_var_tok.value, Numero(i))
             i += paso.value
 
-            res.register(self.visit(nodo.cuerpo_nodo, contexto))
+            elementos.append(res.register(self.visit(nodo.cuerpo_nodo, contexto)))
             if res.error: return res
 
-        return res.success(None)
+        return res.success(Lista(elementos).set_contexto(contexto).set_posicion(nodo.pos_start,nodo.pos_end))
 
     def visit_MientrasNodo(self, nodo, contexto):
         res = RuntimeResult()
+        elementos = []
 
         while True:
             condicion = res.register(self.visit(nodo.condicion_nodo, contexto))
@@ -1317,10 +1434,10 @@ class Interpretador:
 
             if not condicion.es_verdad(): break
 
-            res.register(self.visit(nodo.cuerpo_nodo, contexto))
+            elementos.append(res.register(self.visit(nodo.cuerpo_nodo, contexto)))
             if res.error: return res
 
-        return res.success(None)
+        return res.success(Lista(elementos).set_contexto(contexto).set_posicion(nodo.pos_start,nodo.pos_end))
 
     def visit_FuncDefNodo(self, nodo, contexto):
         #print("nodo def a visitar")
