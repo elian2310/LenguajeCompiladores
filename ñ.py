@@ -13,6 +13,7 @@ from pickle import TRUE
 from pickletools import read_uint1
 import re
 from select import select
+#from tokenize import Numero
 #from time import clock_settime
 #from turtle import ondrag, pos
 from unittest import result
@@ -20,7 +21,7 @@ from xml.dom import InvalidCharacterErr
 from xml.dom.minidom import Element
 from strings_with_arrows import *
 import string
-
+import os
 Digitos = '0123456789'
 Letras = string.ascii_letters
 LetrasyDigitos = Letras + Digitos
@@ -58,7 +59,7 @@ class RTError(Error):
     def __init__(self, pos_start, pos_end, details, contexto):
         super().__init__(pos_start, pos_end, 'Error de ejecucion', details)
         self.contexto = contexto 
-    def como_string(self):
+    def como_str(self):
         result = self.generate_traceback()
         result += f'{self.error_name}: {self.details}\n'
         result += '\n\n' + string_with_arrows(self.pos_start.ftxt, self.pos_start, self.pos_end)
@@ -1109,7 +1110,9 @@ class Numero(Valor):
 
     def __repr__(self):
         return str(self.value)
-
+Numero.null = Numero(0)
+Numero.false= Numero(0)
+Numero.true=Numero(1)
 class Cadena(Valor):
     def __init__(self, valor):
         super().__init__()
@@ -1186,7 +1189,7 @@ class Lista(Valor):
             return None, Valor.operacion_ilegal(self, otro)
 
     def copiar(self):
-        copia = Lista(self.elementos[:])
+        copia = Lista(self.elementos)
         copia.set_posicion(self.pos_start, self.pos_end)
         copia.set_contexto(self.contexto)
         return copia
@@ -1194,54 +1197,188 @@ class Lista(Valor):
     def __repr__(self):
         return f'[{",".join([str(x) for x in self.elementos])}]'
 
-class Funcion(Valor):
-    def __init__(self, nombre, cuerpo_nodo, arg_nombres):
+class FuncionBase(Valor):
+    def __init__(self, nombre):
         super().__init__()
         self.nombre = nombre or "<anonimo>"
+
+    def genenerar_exec_ctx(self):
+        exec_ctx= Contexto(self.nombre, self.contexto, self.pos_start)
+        exec_ctx.tabla_simbolos=tabla_simbolos(exec_ctx.parent.tabla_simbolos)
+        return exec_ctx
+    
+    def revisar_args(self, arg_names, args):
+        res=   RuntimeResult()
+
+        if len(args)>len(arg_names):
+            return res.failure(RTError(self.pos_start, self.pos_end, f"{len(args)-len(arg_names)} pasaron demasiados argumentos '{self}' ", self.contexto))
+        return res.success(None)        
+
+    def poblar_args(self, arg_names, args, exec_ctx):
+        for i in range(len(args)):
+            arg_nombre= arg_names[i]
+            arg_valor=args[i]
+            arg_valor.set_contexto(exec_ctx)
+            exec_ctx.tabla_simbolos.set(arg_nombre, arg_valor)
+    
+    def check_and_populate_args(self,arg_names,args,exec_ctx):
+        res=RuntimeResult()
+        res.register(self.revisar_args(arg_names,args))
+        if res.error:return res
+        self.poblar_args(arg_names,args,exec_ctx)
+        return res.success(None)
+                                 
+class Funcion(FuncionBase):
+    def __init__(self, nombre, cuerpo_nodo, arg_names):
+        super().__init__(nombre)
         self.cuerpo_nodo = cuerpo_nodo
-        self.arg_nombres = arg_nombres
+        self.arg_names = arg_names
 
     def ejecutar(self,args):
         #print("ejecutando funcion")
         res = RuntimeResult()
         interpreter = Interpretador()
-        nuevo_contexto = Contexto(self.nombre, self.contexto, self.pos_start)
-        nuevo_contexto.tabla_simbolos = tabladeSimbolos(nuevo_contexto.parent.tabla_simbolos)
-        
-        if len(args) > len(self.arg_nombres):
-            return res.failure(RTError(
-                self.pos_start, self.pos_end,
-                f"{len(args) - len(self.arg_nombres)} demasiados argumentos '{self.nombre}'",
-                self.contexto
-            ))
-        
-        if len(args) < len(self.arg_nombres):
-            return res.failure(RTError(
-                self.pos_start, self.pos_end,
-                f"{len(self.arg_nombres) - len(args)} Muy pocos argumentos '{self.nombre}'",
-                self.contexto
-            ))
+        exec_ctx = self.genenerar_exec_ctx()
+        res.register(self.check_and_populate_args(self.arg_names,args, exec_ctx))
+        if res.error: return res
 
-        for i in range(len(args)):
-            arg_nombre = self.arg_nombres[i]
-            arg_valor = args[i]
-            arg_valor.set_contexto(nuevo_contexto)
-            nuevo_contexto.tabla_simbolos.set(arg_nombre, arg_valor)
         
-        valor = res.register(interpreter.visit(self.cuerpo_nodo, nuevo_contexto))
+        valor = res.register(interpreter.visit(self.cuerpo_nodo, exec_ctx))
         #print("funcion ejecutada")
         if res.error: return res
         return res.success(valor)
 
     def copiar(self):
-        copia = Funcion(self.nombre, self.cuerpo_nodo, self.arg_nombres)
+        copia = Funcion(self.nombre, self.cuerpo_nodo, self.arg_names)
         copia.set_contexto(self.contexto)
         copia.set_posicion(self.pos_start, self.pos_end)
         return copia   
 
     def __repr__(self):
         return f"<funcion {self.nombre}>"
+class BuiltInFunction(FuncionBase):
+    def __init__(self, nombre):
+        super().__init__(nombre)
+    def ejecutar(self, args):
+        res = RuntimeResult()
+        exec_ctx= self.genenerar_exec_ctx()
 
+        nombre_metodo= f'ejecutar_{self.nombre}'
+        metodo= getattr(self, nombre_metodo, self.No_visitar_metodo)
+
+        res.register(self.check_and_populate_args(metodo.arg_names, args, exec_ctx))
+        if res.error: return res
+
+        return_valor= res.register(metodo(exec_ctx))
+        if res.error: return res
+        return res.success(return_valor)
+    def No_visitar_metodo(self, node, contexto):
+        raise Exception(f'No visit_{type(node).__name__} method defined')    
+    def copiar(self):
+        copia = BuiltInFunction(self.nombre)
+        copia.set_contexto(self.contexto)
+        copia.set_posicion(self.pos_start, self.pos_end)
+        return copia   
+
+    def __repr__(self):
+        return f"<funcion {self.nombre}>"
+    ###################################
+
+    def ejecutar_imprimir(self, exec_ctx):
+        print(str(exec_ctx.tabla_simbolos.get('valor')))
+        return RuntimeResult().success(Numero.null)
+    ejecutar_imprimir.arg_names=['valor']
+
+    def ejecutar_imprimir_ret(self, exec_ctx):
+        return RuntimeResult().success(Cadena(str(exec_ctx.tabla_simbolos.get('valor'))))
+    ejecutar_imprimir_ret.arg_names=['valor']    
+
+    def ejecutar_input(self, exec_ctx):
+        texto = input()
+        return RuntimeResult().success(Cadena(texto))
+    ejecutar_input.arg_names=[]
+
+    def ejecutar_input_int(self, exec_ctx):
+        
+        while True:
+            texto=input()
+            try:
+                numero=int(texto)
+                break
+            except ValueError:
+                print(f"'{texto}'debe ser un integrer. Prueba de nuevo")
+        return RuntimeResult().success(Numero(numero))
+
+    ejecutar_input_int.arg_names=[]
+
+    def ejecutar_limpiar(self, exec_ctx):
+        os.system('cls' if os.name=='nt'else 'clear')
+        return RuntimeResult().success(Numero.null)
+    ejecutar_limpiar.arg_names=[]
+
+    def ejecutar_es_numero(self,exec_ctx):
+        es_numero= isinstance(exec_ctx.tabla_simbolos.get("valor"),Numero)
+        return RuntimeResult().success(Numero.true if es_numero else Numero.false)
+    ejecutar_es_numero.arg_names=['valor']
+
+    def ejecutar_es_cadena(self,exec_ctx):
+        es_numero= isinstance(exec_ctx.tabla_simbolos.get("valor"),Cadena)
+        return RuntimeResult().success(Numero.true if es_numero else Numero.false)
+    ejecutar_es_cadena.arg_names=['valor'] 
+
+    def ejecutar_es_lista(self,exec_ctx):
+        es_numero= isinstance(exec_ctx.tabla_simbolos.get("valor"),Lista)
+        return RuntimeResult().success(Numero.true if es_numero else Numero.false)
+    ejecutar_es_lista.arg_names=['valor'] 
+    def ejecutar_es_funcion(self,exec_ctx):
+        es_numero= isinstance(exec_ctx.tabla_simbolos.get("valor"),FuncionBase)
+        return RuntimeResult().success(Numero.true if es_numero else Numero.false)
+    ejecutar_es_funcion.arg_names=['valor'] 
+
+    def ejecutar_adjuntar(self, exec_ctx):
+        lista_=exec_ctx.tabla_simbolos.get("lista")
+        valor=exec_ctx.tabla_simbolos.get("valor")
+        if not isinstance(lista_, Lista):
+            return RuntimeResult().failure(RTError(self.pos_start, self.pos_end, "Primer argumento debe ser lista", exec_ctx))
+        lista_.elementos.append(valor)
+        return RuntimeResult().success(Numero.null)
+    ejecutar_adjuntar.arg_names=['lista','valor']
+
+    def ejecutar_pop(self, exec_ctx):
+        lista_=exec_ctx.tabla_simbolos.get("lista")
+        index=exec_ctx.tabla_simbolos.get("index")
+        if not isinstance(lista_, Lista):
+            return RuntimeResult().failure(RTError(self.pos_start, self.pos_end, "Primer argumento debe ser lista", exec_ctx))
+        if not isinstance(index, Numero):
+            return RuntimeResult().failure(RTError(self.pos_start, self.pos_end, "Segundo argumento debe ser numero", exec_ctx))
+        try:
+            elemento= lista_.elementos.pop(index.value)
+        except:
+            return RuntimeResult().failure(RTError(self.pos_start, self.pos_end,"el elemento en este indice no se pudo eliminar de la lista", exec_ctx))
+        return RuntimeResult().success(elemento)
+    ejecutar_pop.arg_names=['lista','index']
+    def ejecutar_extender(self, exec_ctx):
+        listaA=exec_ctx.tabla_simbolos.get("listaA")
+        listaB=exec_ctx.tabla_simbolos.get("listaB")
+        if not isinstance(listaA, Lista):
+            return RuntimeResult().failure(RTError(self.pos_start, self.pos_end, "Primer argumento debe ser lista", exec_ctx))
+        if not isinstance(listaB, Lista):
+            return RuntimeResult().failure(RTError(self.pos_start, self.pos_end, "Segundo argumento debe ser lista", exec_ctx))
+        listaA.elementos.extend(listaB.elementos)
+        return RuntimeResult().success(Numero.null)
+    ejecutar_extender.arg_names=["listaA","listaB"]
+BuiltInFunction.imprimir        =BuiltInFunction("imprimir")
+BuiltInFunction.imprimir_ret        =BuiltInFunction("imprimir_ret")
+BuiltInFunction.input        =BuiltInFunction("input")
+BuiltInFunction.input_int        =BuiltInFunction("input_int")
+BuiltInFunction.limpiar        =BuiltInFunction("limpiar")
+BuiltInFunction.es_numero        =BuiltInFunction("es_numero")
+BuiltInFunction.es_cadena        =BuiltInFunction("es_cadena")
+BuiltInFunction.es_lista        =BuiltInFunction("es_lista")
+BuiltInFunction.es_funcion        =BuiltInFunction("es_funcion")
+BuiltInFunction.adjuntar        =BuiltInFunction("adjuntar")
+BuiltInFunction.pop        =BuiltInFunction("pop")
+BuiltInFunction.extender        =BuiltInFunction("extender")
 #######################################
 # Contexto
 #######################################
@@ -1256,7 +1393,7 @@ class Contexto:
 # Tabla de simbolos
 #######################################
 
-class tabladeSimbolos:
+class tabla_simbolos:
     def __init__(self,parent=None):
         self.simbolos = {}
         self.padre = parent
@@ -1310,7 +1447,7 @@ class Interpretador:
         if not value:
             return res.failure(RTError(node.pos_start, node.pos_end,f"'{nombre_var}' no esta definido", contexto))
 
-        value = value.copiar().set_posicion(node.pos_start, node.pos_end)
+        value = value.copiar().set_posicion(node.pos_start, node.pos_end).set_contexto(contexto)
         return res.success(value)
 
     def visit_AsignamientoVarNodo(self, node, contexto):
@@ -1445,8 +1582,8 @@ class Interpretador:
 
         func_nombre = nodo.nombre_var_tok.value if nodo.nombre_var_tok else None
         cuerpo_nodo = nodo.cuerpo_nodo
-        arg_nombres = [arg_name.value for arg_name in nodo.arg_nombre_toks]
-        func_valor = Funcion(func_nombre, cuerpo_nodo, arg_nombres).set_contexto(contexto).set_posicion(nodo.pos_start, nodo.pos_end)
+        arg_names = [arg_name.value for arg_name in nodo.arg_nombre_toks]
+        func_valor = Funcion(func_nombre, cuerpo_nodo, arg_names).set_contexto(contexto).set_posicion(nodo.pos_start, nodo.pos_end)
         
         if nodo.nombre_var_tok:
             contexto.tabla_simbolos.set(func_nombre, func_valor)
@@ -1470,16 +1607,30 @@ class Interpretador:
         return_value = res.register(valor_a_llamar.ejecutar(args))
         #print("nodo llamar visitado")
         if res.error: return res
+        return_value=return_value.copiar().set_posicion(node.pos_start,node.pos_end).set_contexto(context)
         return res.success(return_value)
     
 #######################################
 # Correr
 #######################################
 
-global_tabla_simbolos = tabladeSimbolos()
-global_tabla_simbolos.set("NULO", Numero(0))
-global_tabla_simbolos.set("VERDADERO", Numero(1))
-global_tabla_simbolos.set("FALSO", Numero(0))
+global_tabla_simbolos = tabla_simbolos()
+global_tabla_simbolos.set("NULO", Numero.null)
+global_tabla_simbolos.set("VERDADERO", Numero.true)
+global_tabla_simbolos.set("FALSO", Numero.false)
+global_tabla_simbolos.set("IMPRIMIR", BuiltInFunction.imprimir)
+global_tabla_simbolos.set("IMPRIMIR_RET", BuiltInFunction.imprimir_ret)
+global_tabla_simbolos.set("INPUT", BuiltInFunction.input)
+global_tabla_simbolos.set("INPUT_INT", BuiltInFunction.input_int)
+global_tabla_simbolos.set("LIMPIAR", BuiltInFunction.limpiar)
+global_tabla_simbolos.set("CLS", BuiltInFunction.limpiar)
+global_tabla_simbolos.set("ES_NUMERO", BuiltInFunction.es_numero)
+global_tabla_simbolos.set("ES_CADENA", BuiltInFunction.es_cadena)
+global_tabla_simbolos.set("ES_LISTA", BuiltInFunction.es_lista)
+global_tabla_simbolos.set("ES_FUNCION", BuiltInFunction.es_funcion)
+global_tabla_simbolos.set("ADJUNTAR", BuiltInFunction.adjuntar)
+global_tabla_simbolos.set("POP", BuiltInFunction.pop)
+global_tabla_simbolos.set("EXTENDER", BuiltInFunction.extender)
 
 def exe(fn, text): 
     lexer = Lexer(fn, text)

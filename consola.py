@@ -6,4 +6,4 @@ while True:
     res, error = ñ.exe("<input>",text)
 
     if error: print(error.como_str())
-    elif res: print(res)
+    elif res: print(repr(res))
