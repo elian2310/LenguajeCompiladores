@@ -1,0 +1,6 @@
+IMPRIMIR("Hola")
+
+POR i = 0 A 5 ENTONCES
+	IMPRIMIR("ciclo")
+	IMPRIMIR("cciclo")
+FIN

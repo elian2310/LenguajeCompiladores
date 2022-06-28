@@ -263,7 +263,7 @@ class Lexer:
 
         while self.current_char != None and self.current_char != '"' or caracter_escape :
             if caracter_escape:
-                string += caracter_escape.get(self.current_char, self.current_char)
+                string += caracteres_escape.get(self.current_char, self.current_char)
             else:
                 if self.current_char == '\\':
                     caracter_escape = True
