@@ -1,25 +1,8 @@
 #######################################
 # Constantes
 #######################################
-from ast import Num, Return, expr, keyword
-from asyncio import selector_events
-from cgitb import reset
-from cmath import sin
-from lib2to3.pgen2 import token
-from lib2to3.pgen2.parse import ParseError
-from math import factorial
-from multiprocessing import context
-from multiprocessing.sharedctypes import Value
-from pickle import TRUE
-from pickletools import read_uint1
-import re
-from select import select
-#from tokenize import Numero
-#from time import clock_settime
-#from turtle import ondrag, pos
-from unittest import result
-from xml.dom import InvalidCharacterErr
-from xml.dom.minidom import Element
+
+from ast import Num
 from strings_with_arrows import *
 import string
 import os
@@ -145,7 +128,10 @@ RESERVADAS = [
     'PASO',
     'MIENTRAS',
     'FUN',
-    'FIN'
+    'FIN',
+    'RETORNAR',
+    'CONTINUAR',
+    'ROMPER'
 
 ]
 class Token:
@@ -439,11 +425,11 @@ class MientrasNodo:
         self.pos_start = condicion_nodo.pos_start
         self.pos_end = cuerpo_nodo.pos_end 
 class FuncDefNodo: 
-    def __init__(self,var_nombre_tok, arg_nombre_toks, cuerpo_nodo, deberia_devolver_nulo):
+    def __init__(self,var_nombre_tok, arg_nombre_toks, cuerpo_nodo, debe_auto_devolver):
         self.nombre_var_tok = var_nombre_tok
         self.arg_nombre_toks = arg_nombre_toks
         self.cuerpo_nodo = cuerpo_nodo
-        self.deberia_devolver_nulo = deberia_devolver_nulo
+        self.debe_auto_devolver = debe_auto_devolver
 
         if self.nombre_var_tok:
             self.pos_start = self.nombre_var_tok.pos_start
@@ -465,6 +451,26 @@ class LlamarNodo:
             self.pos_end = self.arg_nodos[len(self.arg_nodos) - 1].pos_end
         else:
             self.pos_end = self.nodo_a_llamar.pos_end
+
+class RetornarNodo:
+    def __init__(self, nodo_a_devolver, pos_start, pos_end):
+        self.nodo_a_devolver = nodo_a_devolver
+        self.pos_start = pos_start
+        self.pos_end = pos_end
+
+class ContinuarNodo:
+    def __init__(self,pos_start, pos_end):
+        self.pos_start = pos_start
+        self.pos_end = pos_end
+
+class RomperNodo:
+    def __init__(self,pos_start, pos_end):
+        self.pos_start = pos_start
+        self.pos_end = pos_end
+
+
+
+        
 
 #######################################
 # Parse Result
@@ -515,7 +521,7 @@ class Parser:
     def reversa(self, cantidad=1):
         self.tok_idx -= cantidad
         self.upd_curr_tok()
-        return self.current_tok()
+        return self.current_tok
 
     def upd_curr_tok(self):
         if self.tok_idx >= 0 and self.tok_idx < len(self.tokens):
@@ -565,7 +571,7 @@ class Parser:
                 else:
                     return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, "Esperaba 'FIN'"))
             else:
-                expr = res.registrar(self.expr())
+                expr = res.registrar(self.declaracion())
                 if res.error: return res
                 sino_caso = (expr, False)
 
@@ -622,7 +628,7 @@ class Parser:
                 nuevos_casos, sino_caso = todos_los_casos
                 casos.extend(nuevos_casos)
         else:
-            expr = res.registrar(self.expr())
+            expr = res.registrar(self.declaracion())
             if res.error: return res
             casos.append((condicion, expr, False))
 
@@ -699,7 +705,7 @@ class Parser:
 
             return res.correcto(PorNodo(nom_var, val_ini, val_fin, val_paso, cuerpo, True))
 
-        cuerpo = res.registrar(self.expr())
+        cuerpo = res.registrar(self.declaracion())
         if res.error: return res
 
         return res.correcto(PorNodo(nom_var, val_ini, val_fin, val_paso, cuerpo, False))
@@ -737,7 +743,7 @@ class Parser:
 
             return res.correcto(MientrasNodo(condicion, cuerpo, True))
 
-        cuerpo = res.registrar(self.expr())
+        cuerpo = res.registrar(self.declaracion())
         if res.error: return res
 
         return res.correcto(MientrasNodo(condicion, cuerpo, False))
@@ -811,7 +817,7 @@ class Parser:
             nodo_a_devolver = res.registrar(self.expr())
             #print("funcion definida")
             if res.error : return res
-            return res.correcto(FuncDefNodo(var_nombre_tok,arg_nombre_toks,nodo_a_devolver, False))
+            return res.correcto(FuncDefNodo(var_nombre_tok,arg_nombre_toks,nodo_a_devolver, True))
 
         if self.current_tok.type != NUEVALINEA:
             return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba '->' o NUEVALINEA"))
@@ -828,7 +834,7 @@ class Parser:
         res.registro_avance()
         self.avanzar()
 
-        return res.correcto(FuncDefNodo(var_nombre_tok, arg_nombre_toks, cuerpo, True))
+        return res.correcto(FuncDefNodo(var_nombre_tok, arg_nombre_toks, cuerpo, False))
 
 
         
@@ -1018,7 +1024,7 @@ class Parser:
             res.registro_avance()
             self.avanzar()
 
-        declaracion = res.registrar(self.expr())
+        declaracion = res.registrar(self.declaracion())
         if res.error: return res
         declaraciones.append(declaracion)
 
@@ -1035,7 +1041,7 @@ class Parser:
 
             if not mas_decl: break
 
-            declaracion = res.try_registrar(self.expr())
+            declaracion = res.try_registrar(self.declaracion())
             if not declaracion:
                 self.reversa(res.contador_reversa)
                 mas_decl = False
@@ -1044,7 +1050,38 @@ class Parser:
         return res.correcto(ListaNodo(declaraciones, pos_start, self.current_tok.pos_end.copiar()))
 
         
+    def declaracion(self):
+        res = ParseResult()
+        pos_start = self.current_tok.pos_start.copiar()
 
+        if self.current_tok.iguala(PALCL, 'RETORNAR'):
+            res.registro_avance()
+            self.avanzar()
+
+            expr = res.try_registrar(self.expr())
+            if not expr:
+                self.reversa(res.contador_reversa)
+            return res.correcto(RetornarNodo(expr, pos_start, self.current_tok.pos_start.copiar()))
+
+        if self.current_tok.iguala(PALCL, 'CONTINUAR'):
+            res.registro_avance()
+            self.avanzar()
+
+            return res.correcto(ContinuarNodo(pos_start, self.current_tok.pos_start.copiar()))
+
+        if self.current_tok.iguala(PALCL, 'ROMPER'):
+            res.registro_avance()
+            self.avanzar()
+
+            return res.correcto(RomperNodo(pos_start, self.current_tok.pos_start.copiar()))
+
+        expr = res.registrar(self.expr())
+        if res.error:
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start,self.current_tok.pos_end,
+                "Se esperaba 'RETORNAR', 'CONTINUAR', 'ROMPER', 'VAR', 'SI', 'POR', 'MIENTRAS', ent, real, id, '+', '-', '(', '[' o 'NO'"))
+        
+        return res.correcto(expr)
+            
 
     def expr(self):
         res=ParseResult()
@@ -1072,7 +1109,7 @@ class Parser:
         node =  res.registrar(self.bin_op(self.expr_comp, ((PALCL, "Y"), (PALCL, "O"))))
         if res.error: 
             return res.fallo(InvalidSyntaxError(self.current_tok.pos_start,self.current_tok.pos_end,
-                "Se esperaba 'VAR, 'ENT, REAL, ID, '+', '-', '(', '['"))
+                "Se esperaba 'VAR', 'SI', 'POR', 'MIENTRAS', ent, real, id, '+', '-', '(', '[' o 'NO'"))
         return res.correcto(node)
 
 #######################################
@@ -1096,17 +1133,48 @@ class Parser:
 #######################################
 class RuntimeResult:
     def __init__(self):
+        self.resetear()
+
+    def resetear(self):
         self.error = None
         self.value = None
+        self.val_ret_func = None
+        self.ciclo_continua = False
+        self.ciclo_rompe = False
+
     def register(self,res):
-        if res.error: self.error = res.error
+        self.error = res.error
+        self.val_ret_func = res.val_ret_func
+        self.ciclo_continua = res.ciclo_continua
+        self.ciclo_rompe = res.ciclo_rompe
         return res.value
     def success(self,value):
+        self.resetear()
         self.value = value
         return self
+
+    def success_retornar(self, value):
+        self.resetear()
+        self.val_ret_func = value
+        return self
+
+    def success_continuar(self):
+        self.resetear()
+        self.ciclo_continua = True
+        return self
+
+    def succcess_romper(self):
+        self.resetear()
+        self.ciclo_rompe = True
+        return self
+
     def failure(self,error):
+        self.resetear()
         self.error = error
         return self
+
+    def debe_retornar(self):
+        return (self.error or self.val_ret_func or self.ciclo_continua or self.ciclo_rompe)
 
 #######################################
 # Valores
@@ -1392,16 +1460,16 @@ class FuncionBase(Valor):
     def check_and_populate_args(self,arg_names,args,exec_ctx):
         res=RuntimeResult()
         res.register(self.revisar_args(arg_names,args))
-        if res.error:return res
+        if res.debe_retornar():return res
         self.poblar_args(arg_names,args,exec_ctx)
         return res.success(None)
                                  
 class Funcion(FuncionBase):
-    def __init__(self, nombre, cuerpo_nodo, arg_names, deberia_devolver_nulo):
+    def __init__(self, nombre, cuerpo_nodo, arg_names, debe_auto_devolver):
         super().__init__(nombre)
         self.cuerpo_nodo = cuerpo_nodo
         self.arg_names = arg_names
-        self.deberia_devolver_nulo = deberia_devolver_nulo
+        self.debe_auto_devolver = debe_auto_devolver
 
     def ejecutar(self,args):
         #print("ejecutando funcion")
@@ -1409,16 +1477,18 @@ class Funcion(FuncionBase):
         interpreter = Interpretador()
         exec_ctx = self.genenerar_exec_ctx()
         res.register(self.check_and_populate_args(self.arg_names,args, exec_ctx))
-        if res.error: return res
+        if res.debe_retornar(): return res
 
         
         valor = res.register(interpreter.visit(self.cuerpo_nodo, exec_ctx))
         #print("funcion ejecutada")
-        if res.error: return res
-        return res.success(Numero.null if self.deberia_devolver_nulo else valor)
+        if res.debe_retornar() and res.val_ret_func == None: return res
+
+        valor_devolver = (valor if self.debe_auto_devolver else None) or res.val_ret_func or Numero.null
+        return res.success(valor_devolver)
 
     def copiar(self):
-        copia = Funcion(self.nombre, self.cuerpo_nodo, self.arg_names, self.deberia_devolver_nulo)
+        copia = Funcion(self.nombre, self.cuerpo_nodo, self.arg_names, self.debe_auto_devolver)
         copia.set_contexto(self.contexto)
         copia.set_posicion(self.pos_start, self.pos_end)
         return copia   
@@ -1436,10 +1506,10 @@ class BuiltInFunction(FuncionBase):
         metodo= getattr(self, nombre_metodo, self.No_visitar_metodo)
 
         res.register(self.check_and_populate_args(metodo.arg_names, args, exec_ctx))
-        if res.error: return res
+        if res.debe_retornar(): return res
 
         return_valor= res.register(metodo(exec_ctx))
-        if res.error: return res
+        if res.debe_retornar(): return res
         return res.success(return_valor)
     def No_visitar_metodo(self, node, contexto):
         raise Exception(f'No visit_{type(node).__name__} method defined')    
@@ -1603,7 +1673,7 @@ class Interpretador:
         elementos = []
         for nodo_elemento in node.elementos_nodo:
             elementos.append(res.register(self.visit(nodo_elemento, contexto)))
-            if res.error: return res
+            if res.debe_retornar(): return res
         return res.success(
             Lista(elementos).set_contexto(contexto).set_posicion(node.pos_start,node.pos_end)
         )
@@ -1624,14 +1694,14 @@ class Interpretador:
         nombre_var = node.nombre_var_tok.value
         value = res.register(self.visit(node.val_nodo,contexto))
 
-        if res.error: return res
+        if res.debe_retornar(): return res
         contexto.tabla_simbolos.set(nombre_var, value)
         return res.success(value)
 
     def visit_OperadorUnario(self, node, contexto):
         res = RuntimeResult()
         numero = res.register(self.visit(node.node, contexto))
-        if res.error: return res
+        if res.debe_retornar(): return res
 
         error = None
         
@@ -1647,9 +1717,9 @@ class Interpretador:
     def visit_OperadorBinario(self, node, contexto):
         res = RuntimeResult()
         left = res.register(self.visit(node.left_node, contexto))
-        if res.error: return res
+        if res.debe_retornar(): return res
         right = res.register(self.visit(node.right_node, contexto))
-        if res.error: return res
+        if res.debe_retornar(): return res
 
         if node.op_tok.type == MAS:
             result, error = left.sumado_A(right)
@@ -1686,16 +1756,16 @@ class Interpretador:
         res = RuntimeResult()
         for condition, expr, deberia_devolver_nulo in node.cases:
             condition_value = res.register(self.visit(condition,contexto))
-            if res.error: return res
+            if res.debe_retornar(): return res
 
             if condition_value.es_verdad():
                 expr_value= res.register(self.visit(expr,contexto))
-                if res.error: return res
+                if res.debe_retornar(): return res
                 return res.success(Numero.null if deberia_devolver_nulo else expr_value)
         if node.else_case:
             expr, deberia_devolver_nulo = node.else_case
             expr_value= res.register(self.visit(expr, contexto))
-            if res.error: return res
+            if res.debe_retornar(): return res
             return res.success(Numero.null if deberia_devolver_nulo else expr_value)   
         return res.success(Numero.null)     
 
@@ -1704,14 +1774,14 @@ class Interpretador:
         elementos = []
 
         val_ini = res.register(self.visit(nodo.val_ini_nodo, contexto))
-        if res.error: return res
+        if res.debe_retornar(): return res
 
         val_fin = res.register(self.visit(nodo.val_fin_nodo, contexto))
-        if res.error: return res
+        if res.debe_retornar(): return res
 
         if nodo.paso_nodo:
             paso = res.register(self.visit(nodo.paso_nodo, contexto))
-            if res.error: return res
+            if res.debe_retornar(): return res
         else:
             paso = Numero(1)
 
@@ -1726,8 +1796,15 @@ class Interpretador:
             contexto.tabla_simbolos.set(nodo.nom_var_tok.value, Numero(i))
             i += paso.value
 
-            elementos.append(res.register(self.visit(nodo.cuerpo_nodo, contexto)))
-            if res.error: return res
+            valor = res.register(self.visit(nodo.cuerpo_nodo, contexto))
+            if res.debe_retornar() and res.ciclo_continua == False and res.ciclo_rompe == False: return res
+
+            if res.ciclo_continua:
+                continue
+
+            if res.ciclo_rompe:
+                break
+            elementos.append(valor)
 
         return res.success(
             Numero.null if nodo.deberia_devolver_nulo else
@@ -1739,12 +1816,19 @@ class Interpretador:
 
         while True:
             condicion = res.register(self.visit(nodo.condicion_nodo, contexto))
-            if res.error: return res
+            if res.debe_retornar(): return res
 
             if not condicion.es_verdad(): break
 
-            elementos.append(res.register(self.visit(nodo.cuerpo_nodo, contexto)))
-            if res.error: return res
+            valor = res.register(self.visit(nodo.cuerpo_nodo, contexto))
+            if res.debe_retornar() and res.ciclo_continua == False and res.ciclo_rompe == False: return res
+
+            if res.ciclo_continua:
+                continue
+
+            if res.ciclo_rompe:
+                break
+            elementos.append(valor)
 
         return res.success(
             Numero.null if nodo.deberia_devolver_nulo else
@@ -1757,7 +1841,7 @@ class Interpretador:
         func_nombre = nodo.nombre_var_tok.value if nodo.nombre_var_tok else None
         cuerpo_nodo = nodo.cuerpo_nodo
         arg_names = [arg_name.value for arg_name in nodo.arg_nombre_toks]
-        func_valor = Funcion(func_nombre, cuerpo_nodo, arg_names, nodo.deberia_devolver_nulo).set_contexto(contexto).set_posicion(nodo.pos_start, nodo.pos_end)
+        func_valor = Funcion(func_nombre, cuerpo_nodo, arg_names, nodo.debe_auto_devolver).set_contexto(contexto).set_posicion(nodo.pos_start, nodo.pos_end)
         
         if nodo.nombre_var_tok:
             contexto.tabla_simbolos.set(func_nombre, func_valor)
@@ -1771,18 +1855,37 @@ class Interpretador:
         args = []
 
         valor_a_llamar = res.register(self.visit(node.nodo_a_llamar, context))
-        if res.error: return res
+        if res.debe_retornar(): return res
         valor_a_llamar = valor_a_llamar.copiar().set_posicion(node.pos_start, node.pos_end)
 
         for arg_node in node.arg_nodos:
             args.append(res.register(self.visit(arg_node, context)))
-            if res.error: return res
+            if res.debe_retornar(): return res
 
         return_value = res.register(valor_a_llamar.ejecutar(args))
         #print("nodo llamar visitado")
-        if res.error: return res
+        if res.debe_retornar(): return res
         return_value=return_value.copiar().set_posicion(node.pos_start,node.pos_end).set_contexto(context)
         return res.success(return_value)
+
+    def visit_RetornarNodo(self, node, context):
+        res = RuntimeResult()
+        if node.nodo_a_devolver:
+            valor = res.register(self.visit(node.nodo_a_devolver, context))
+            if res.debe_retornar():
+                return res
+        else:
+            valor = Numero.null
+        
+        return res.success_retornar(valor)
+
+    def visit_ContinuarNodo(self, node, context):
+        return RuntimeResult().success_continuar()
+
+    def visit_RomperNodo(self, node, context):
+        return RuntimeResult().succcess_romper()
+
+
     
 #######################################
 # Correr
