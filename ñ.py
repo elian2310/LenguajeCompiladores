@@ -865,7 +865,7 @@ class Parser:
                 self.avanzar()
                 return res.correcto(expr)
             else:
-                return res.fallo(InvalidCharacterErr(self.current_tok.pos_start, self.current_tok.pos_end,"Se esperaba ')'"))
+                return res.fallo(IllegalCharError(self.current_tok.pos_start, self.current_tok.pos_end,"Se esperaba ')'"))
         elif tok.type == CORCHIZQ:
             expr_lista = res.registrar(self.expr_lista())
             if res.error: return res
@@ -1606,6 +1606,37 @@ class BuiltInFunction(FuncionBase):
         listaA.elementos.extend(listaB.elementos)
         return RuntimeResult().success(Numero.null)
     ejecutar_extender.arg_names=["listaA","listaB"]
+
+    def ejecutar_tam(self, exec_ctx):
+        lista_ = exec_ctx.tabla_simbolos.get("lista")
+        if not isinstance(lista_, Lista):
+            return RuntimeResult().failure(RTError(self.pos_start, self.pos_end, "Argumento debe ser lista", exec_ctx))
+
+        return RuntimeResult.success(Numero(len(lista_.elementos)))
+
+    ejecutar_tam.arg_names=["lista"]
+
+    def ejecutar_correr(self, exec_ctx):
+        na = exec_ctx.tabla_simbolos.get("na")
+        if not isinstance(na, Cadena):
+            return RuntimeResult().failure(RuntimeError(self.pos_start, self.pos_end, "Argumento debe ser una cadena", exec_ctx))
+        na = na.value
+
+        try:
+            with open(na, "r") as a:
+                script = a.read()
+        except Exception as e:
+            return RuntimeResult().failure(RuntimeError(self.pos_start, self.pos_end, f"Fallo al cargar script \"{na}\"\n" + str(e), exec_ctx))
+
+        _, error = exe(na, script)
+
+        if error:
+            return RuntimeResult().failure(RuntimeError(self.pos_start, self.pos_end, f"Fallo al ejecutar script \"{na}\"\n" + error.como_str(), exec_ctx))
+
+        return RuntimeResult.success(Numero.null)
+
+    ejecutar_correr.arg_names=["na"]
+
 BuiltInFunction.imprimir        =BuiltInFunction("imprimir")
 BuiltInFunction.imprimir_ret        =BuiltInFunction("imprimir_ret")
 BuiltInFunction.input        =BuiltInFunction("input")
@@ -1618,6 +1649,8 @@ BuiltInFunction.es_funcion        =BuiltInFunction("es_funcion")
 BuiltInFunction.adjuntar        =BuiltInFunction("adjuntar")
 BuiltInFunction.pop        =BuiltInFunction("pop")
 BuiltInFunction.extender        =BuiltInFunction("extender")
+BuiltInFunction.tam         = BuiltInFunction("tam")
+BuiltInFunction.correr      = BuiltInFunction("correr")
 #######################################
 # Contexto
 #######################################
@@ -1908,6 +1941,8 @@ global_tabla_simbolos.set("ES_FUNCION", BuiltInFunction.es_funcion)
 global_tabla_simbolos.set("ADJUNTAR", BuiltInFunction.adjuntar)
 global_tabla_simbolos.set("POP", BuiltInFunction.pop)
 global_tabla_simbolos.set("EXTENDER", BuiltInFunction.extender)
+global_tabla_simbolos.set("TAM", BuiltInFunction.tam)
+global_tabla_simbolos.set("CORRER", BuiltInFunction.correr)
 
 def exe(fn, text): 
     lexer = Lexer(fn, text)
