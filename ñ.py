@@ -4,6 +4,7 @@
 from ast import Num, Return, expr, keyword
 from asyncio import selector_events
 from cgitb import reset
+from cmath import sin
 from lib2to3.pgen2 import token
 from lib2to3.pgen2.parse import ParseError
 from math import factorial
@@ -143,8 +144,8 @@ RESERVADAS = [
     'A',
     'PASO',
     'MIENTRAS',
-    'FUN'
-
+    'FUN',
+    'FIN'
 
 ]
 class Token:
@@ -186,6 +187,9 @@ class Lexer:
 
         while self.current_char != None:
             if self.current_char in ' \t':
+                self.avanzar()
+            elif self.current_char in ';\n':
+                tokens.append(Token(NUEVALINEA, pos_start=self.pos))
                 self.avanzar()
             elif self.current_char in Digitos:
                 tokens.append(self.crear_num())
@@ -412,31 +416,34 @@ class SiNodo:
         self.else_case =  else_case
 
         self.pos_start = self.cases[0][0].pos_start
-        self.pos_end = (self.else_case or self.cases[len(self.cases) - 1][0]).pos_end
+        self.pos_end = (self.else_case or self.cases[len(self.cases) - 1])[0].pos_end
 
 class PorNodo:
-    def __init__(self, nom_var_tok, val_ini_nodo, val_fin_nodo, paso_nodo, cuerpo_nodo):
+    def __init__(self, nom_var_tok, val_ini_nodo, val_fin_nodo, paso_nodo, cuerpo_nodo, deberia_devolver_nulo):
         self.nom_var_tok = nom_var_tok
         self.val_ini_nodo = val_ini_nodo
         self.val_fin_nodo = val_fin_nodo
         self.paso_nodo = paso_nodo
         self.cuerpo_nodo = cuerpo_nodo
+        self.deberia_devolver_nulo = deberia_devolver_nulo
 
         self.pos_start = self.nom_var_tok.pos_start
         self.pos_end = self.cuerpo_nodo.pos_end
 
 class MientrasNodo:
-    def __init__(self, condicion_nodo, cuerpo_nodo):
+    def __init__(self, condicion_nodo, cuerpo_nodo, deberia_devolver_nulo):
         self.condicion_nodo = condicion_nodo
         self.cuerpo_nodo = cuerpo_nodo
+        self.deberia_devolver_nulo = deberia_devolver_nulo
 
         self.pos_start = condicion_nodo.pos_start
         self.pos_end = cuerpo_nodo.pos_end 
 class FuncDefNodo: 
-    def __init__(self,var_nombre_tok, arg_nombre_toks, cuerpo_nodo):
+    def __init__(self,var_nombre_tok, arg_nombre_toks, cuerpo_nodo, deberia_devolver_nulo):
         self.nombre_var_tok = var_nombre_tok
         self.arg_nombre_toks = arg_nombre_toks
         self.cuerpo_nodo = cuerpo_nodo
+        self.deberia_devolver_nulo = deberia_devolver_nulo
 
         if self.nombre_var_tok:
             self.pos_start = self.nombre_var_tok.pos_start
@@ -467,15 +474,24 @@ class ParseResult:
     def __init__(self):
         self.error = None
         self.node = None
+        self.ultima_cuenta_avance = 0
         self.cuenta_avance = 0
+        self.contador_reversa = 0
     
     def registro_avance(self):
         self.cuenta_avance += 1
 
     def registrar(self,res):
+        self.ultima_cuenta_avance = res.cuenta_avance
         self.cuenta_avance += res.cuenta_avance
         if res.error: self.error = res.error
         return res.node
+
+    def try_registrar(self, res):
+        if res.error:
+            self.contador_reversa = res.cuenta_avance
+            return None
+        return self.registrar(res)
 
     def correcto(self,node):
         self.node = node
@@ -495,6 +511,15 @@ class Parser:
         self.tokens = tokens
         self.tok_idx = -1
         self.avanzar()
+
+    def reversa(self, cantidad=1):
+        self.tok_idx -= cantidad
+        self.upd_curr_tok()
+        return self.current_tok()
+
+    def upd_curr_tok(self):
+        if self.tok_idx >= 0 and self.tok_idx < len(self.tokens):
+            self.current_tok = self.tokens[self.tok_idx]
     
     def avanzar(self):
         self.tok_idx += 1
@@ -503,52 +528,111 @@ class Parser:
         return self.current_tok
     
     def parse(self):
-        res = self.expr()
+        res = self.declaraciones()
         if not res.error and self.current_tok.type != FINALARCHIVO:
             return res.fallo(IllegalCharError(self.current_tok.pos_start, self.current_tok.pos_end, "Se esperaba '+', '-', '*' or '/'"))
         return res
 ####################################### 
     def if_expr(self):
         res = ParseResult()
-        cases = []
-        else_case = None
-        if not self.current_tok.iguala(PALCL, 'SI'):
-            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Se esperaba 'SI'"))
-        res.registro_avance()
-        self.avanzar()
-        condicion= res.registrar(self.expr())
+        todos_los_casos = res.registrar(self.if_expr_casos('SI'))
         if res.error: return res
+        casos, sino_caso = todos_los_casos
+        return res.correcto(SiNodo(casos, sino_caso))
 
-        if not self.current_tok.iguala(PALCL, 'ENTONCES'):
-            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Se esperaba 'ENTONCES'"))
-        res.registro_avance()
-        self.avanzar()
-        expr= res.registrar(self.expr())
-        if res.error: return res
-        cases.append((condicion,expr))
+    def if_expr_b(self):
+        return self.if_expr_casos('SINOESTO')
 
-        while self.current_tok.iguala(PALCL, 'SINOESTO'):
-            res.registro_avance()
-            self.avanzar()
+    def if_expr_c(self):
+        res = ParseResult()
+        sino_caso = None
 
-            condicion= res.registrar(self.expr())
-            if res.error: return res
-            if not self.current_tok.iguala(PALCL, 'ENTONCES'):
-                return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Se esperaba 'ENTONCES'"))
-
-            res.registro_avance()
-            self.avanzar()
-
-            expr= res.registrar(self.expr())
-            if res.error: return res
-            cases.append((condicion, expr))
         if self.current_tok.iguala(PALCL, 'SINO'):
             res.registro_avance()
             self.avanzar()
 
-            else_case=res.registrar(self.expr())
+            if self.current_tok.type == NUEVALINEA:
+                res.registro_avance()
+                self.avanzar()
+
+                declaraciones = res.registrar(self.declaraciones())
+                if res.error: return res
+                sino_caso = (declaraciones, True)
+
+                if self.current_tok.iguala(PALCL, 'FIN'):
+                    res.registro_avance()
+                    self.avanzar()
+                else:
+                    return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, "Esperaba 'FIN'"))
+            else:
+                expr = res.registrar(self.expr())
+                if res.error: return res
+                sino_caso = (expr, False)
+
+        return res.correcto(sino_caso)
+
+    def if_expr_b_o_c(self):
+        res = ParseResult()
+        casos, sino_caso = [], None
+
+        if self.current_tok.iguala(PALCL, 'SINOESTO'):
+            todos_los_casos = res.registrar(self.if_expr_b())
             if res.error: return res
-        return res.correcto(SiNodo(cases, else_case))
+            casos, sino_caso = todos_los_casos
+        else:
+            sino_caso = res.registrar(self.if_expr_c())
+            if res.error: return res
+
+        return res.correcto((casos, sino_caso))
+
+    def if_expr_casos(self, palcl_caso):
+        res = ParseResult()
+        casos = []
+        caso_sino = None
+
+        if not self.current_tok.iguala(PALCL, palcl_caso):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba '{palcl_caso}'"))
+
+        res.registro_avance()
+        self.avanzar()
+
+        condicion = res.registrar(self.expr())
+        if res.error: return res
+
+        if not self.current_tok.iguala(PALCL, 'ENTONCES'):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba 'ENTONCES'"))
+
+        res.registro_avance()
+        self.avanzar()
+
+        if self.current_tok.type == NUEVALINEA:
+            res.registro_avance()
+            self.avanzar()
+
+            declaraciones = res.registrar(self.declaraciones())
+            if res.error: return res
+            casos.append((condicion, declaraciones, True))
+
+            if self.current_tok.iguala(PALCL, 'FIN'):
+                res.registro_avance()
+                self.avanzar()
+            else:
+                todos_los_casos = res.registrar(self.if_expr_b_o_c())
+                if res.error: return res
+                nuevos_casos, sino_caso = todos_los_casos
+                casos.extend(nuevos_casos)
+        else:
+            expr = res.registrar(self.expr())
+            if res.error: return res
+            casos.append((condicion, expr, False))
+
+            todos_los_casos = res.registrar(self.if_expr_b_o_c())
+            if res.error: return res
+            nuevos_casos, sino_caso = todos_los_casos
+            casos.extend(nuevos_casos)
+
+        return res.correcto((casos, sino_caso))
+
 
     def por_expr(self):
         res = ParseResult()
@@ -600,10 +684,25 @@ class Parser:
         res.registro_avance()
         self.avanzar()
 
+        if self.current_tok.type == NUEVALINEA:
+            res.registro_avance()
+            self.avanzar()
+
+            cuerpo = res.registrar(self.declaraciones())
+            if res.error: return res
+
+            if not self.current_tok.iguala(PALCL, 'FIN'):
+                return res.fallo(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba 'FIN'")
+
+            res.registro_avance()
+            self.avanzar()
+
+            return res.correcto(PorNodo(nom_var, val_ini, val_fin, val_paso, cuerpo, True))
+
         cuerpo = res.registrar(self.expr())
         if res.error: return res
 
-        return res.correcto(PorNodo(nom_var, val_ini, val_fin, val_paso, cuerpo))
+        return res.correcto(PorNodo(nom_var, val_ini, val_fin, val_paso, cuerpo, False))
 
     def mientras_expr(self):
         res = ParseResult()
@@ -623,10 +722,25 @@ class Parser:
         res.registro_avance()
         self.avanzar()
 
+        if self.current_tok.type == NUEVALINEA:
+            res.registro_avance()
+            self.avanzar()
+
+            cuerpo = res.registrar(self.declaraciones())
+            if res.error: return res
+
+            if not self.current_tok.iguala(PALCL, 'FIN'):
+                return res.fallo(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba 'FIN'")
+
+            res.registro_avance()
+            self.avanzar()
+
+            return res.correcto(MientrasNodo(condicion, cuerpo, True))
+
         cuerpo = res.registrar(self.expr())
         if res.error: return res
 
-        return res.correcto(MientrasNodo(condicion, cuerpo))
+        return res.correcto(MientrasNodo(condicion, cuerpo, False))
  
     def func_def(self):
         #print("definiendo funcion")
@@ -690,17 +804,34 @@ class Parser:
 				))
         res.registro_avance()
         self.avanzar()
-        if self.current_tok.type != FLECHA:
-            return res.fallo(InvalidSyntaxError(
-				self.current_tok.pos_start, self.current_tok.pos_end,
-				f"Esperaba '->'"
-			))
+
+        if self.current_tok.type == FLECHA:
+            res.registro_avance()
+            self.avanzar()
+            nodo_a_devolver = res.registrar(self.expr())
+            #print("funcion definida")
+            if res.error : return res
+            return res.correcto(FuncDefNodo(var_nombre_tok,arg_nombre_toks,nodo_a_devolver, False))
+
+        if self.current_tok.type != NUEVALINEA:
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba '->' o NUEVALINEA"))
+
         res.registro_avance()
         self.avanzar()
-        nodo_a_devolver = res.registrar(self.expr())
-        #print("funcion definida")
-        if res.error : return res
-        return res.correcto(FuncDefNodo(var_nombre_tok,arg_nombre_toks,nodo_a_devolver))
+
+        cuerpo = res.registrar(self.declaraciones())
+        if res.error: return res
+
+        if not self.current_tok.iguala(PALCL, 'FIN'):
+            return res.fallo(InvalidSyntaxError(self.current_tok.pos_start, self.current_tok.pos_end, f"Esperaba 'FIN'"))
+
+        res.registro_avance()
+        self.avanzar()
+
+        return res.correcto(FuncDefNodo(var_nombre_tok, arg_nombre_toks, cuerpo, True))
+
+
+        
 
     def atom(self):
         res = ParseResult()
@@ -877,6 +1008,43 @@ class Parser:
             ))
 
         return res.correcto(nodo)
+
+    def declaraciones(self):
+        res = ParseResult()
+        declaraciones = []
+        pos_start = self.current_tok.pos_start.copiar()
+
+        while self.current_tok.type == NUEVALINEA:
+            res.registro_avance()
+            self.avanzar()
+
+        declaracion = res.registrar(self.expr())
+        if res.error: return res
+        declaraciones.append(declaracion)
+
+        mas_decl = True
+
+        while True:
+            cont_nl = 0
+            while self.current_tok.type == NUEVALINEA:
+                res.registro_avance()
+                self.avanzar()
+                cont_nl += 1
+            if cont_nl == 0:
+                mas_decl = False
+
+            if not mas_decl: break
+
+            declaracion = res.try_registrar(self.expr())
+            if not declaracion:
+                self.reversa(res.contador_reversa)
+                mas_decl = False
+                continue
+            declaraciones.append(declaracion)
+        return res.correcto(ListaNodo(declaraciones, pos_start, self.current_tok.pos_end.copiar()))
+
+        
+
 
     def expr(self):
         res=ParseResult()
@@ -1229,10 +1397,11 @@ class FuncionBase(Valor):
         return res.success(None)
                                  
 class Funcion(FuncionBase):
-    def __init__(self, nombre, cuerpo_nodo, arg_names):
+    def __init__(self, nombre, cuerpo_nodo, arg_names, deberia_devolver_nulo):
         super().__init__(nombre)
         self.cuerpo_nodo = cuerpo_nodo
         self.arg_names = arg_names
+        self.deberia_devolver_nulo = deberia_devolver_nulo
 
     def ejecutar(self,args):
         #print("ejecutando funcion")
@@ -1246,10 +1415,10 @@ class Funcion(FuncionBase):
         valor = res.register(interpreter.visit(self.cuerpo_nodo, exec_ctx))
         #print("funcion ejecutada")
         if res.error: return res
-        return res.success(valor)
+        return res.success(Numero.null if self.deberia_devolver_nulo else valor)
 
     def copiar(self):
-        copia = Funcion(self.nombre, self.cuerpo_nodo, self.arg_names)
+        copia = Funcion(self.nombre, self.cuerpo_nodo, self.arg_names, self.deberia_devolver_nulo)
         copia.set_contexto(self.contexto)
         copia.set_posicion(self.pos_start, self.pos_end)
         return copia   
@@ -1515,19 +1684,20 @@ class Interpretador:
             return res.success(result.set_posicion(node.pos_start, node.pos_end))
     def visit_SiNodo(self, node, contexto):
         res = RuntimeResult()
-        for condition, expr in node.cases:
+        for condition, expr, deberia_devolver_nulo in node.cases:
             condition_value = res.register(self.visit(condition,contexto))
             if res.error: return res
 
             if condition_value.es_verdad():
                 expr_value= res.register(self.visit(expr,contexto))
                 if res.error: return res
-                return res.success(expr_value)
+                return res.success(Numero.null if deberia_devolver_nulo else expr_value)
         if node.else_case:
-            else_value= res.register(self.visit(node.else_case, contexto))
+            expr, deberia_devolver_nulo = node.else_case
+            expr_value= res.register(self.visit(expr, contexto))
             if res.error: return res
-            return res.success(else_value)   
-        return res.success(None)     
+            return res.success(Numero.null if deberia_devolver_nulo else expr_value)   
+        return res.success(Numero.null)     
 
     def visit_PorNodo(self, nodo, contexto):
         res = RuntimeResult()
@@ -1559,7 +1729,9 @@ class Interpretador:
             elementos.append(res.register(self.visit(nodo.cuerpo_nodo, contexto)))
             if res.error: return res
 
-        return res.success(Lista(elementos).set_contexto(contexto).set_posicion(nodo.pos_start,nodo.pos_end))
+        return res.success(
+            Numero.null if nodo.deberia_devolver_nulo else
+            Lista(elementos).set_contexto(contexto).set_posicion(nodo.pos_start,nodo.pos_end))
 
     def visit_MientrasNodo(self, nodo, contexto):
         res = RuntimeResult()
@@ -1574,7 +1746,9 @@ class Interpretador:
             elementos.append(res.register(self.visit(nodo.cuerpo_nodo, contexto)))
             if res.error: return res
 
-        return res.success(Lista(elementos).set_contexto(contexto).set_posicion(nodo.pos_start,nodo.pos_end))
+        return res.success(
+            Numero.null if nodo.deberia_devolver_nulo else
+            Lista(elementos).set_contexto(contexto).set_posicion(nodo.pos_start,nodo.pos_end))
 
     def visit_FuncDefNodo(self, nodo, contexto):
         #print("nodo def a visitar")
@@ -1583,7 +1757,7 @@ class Interpretador:
         func_nombre = nodo.nombre_var_tok.value if nodo.nombre_var_tok else None
         cuerpo_nodo = nodo.cuerpo_nodo
         arg_names = [arg_name.value for arg_name in nodo.arg_nombre_toks]
-        func_valor = Funcion(func_nombre, cuerpo_nodo, arg_names).set_contexto(contexto).set_posicion(nodo.pos_start, nodo.pos_end)
+        func_valor = Funcion(func_nombre, cuerpo_nodo, arg_names, nodo.deberia_devolver_nulo).set_contexto(contexto).set_posicion(nodo.pos_start, nodo.pos_end)
         
         if nodo.nombre_var_tok:
             contexto.tabla_simbolos.set(func_nombre, func_valor)
